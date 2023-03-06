@@ -1,0 +1,60 @@
+---
+title: "Untitled"
+author: "Daniel P"
+date: '2023-02-24'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+path_to_project_directory <- "~/projects/ARL/"
+
+files2source <- list.files(paste0(path_to_project_directory,"code/sim_funcs"),full.names=TRUE)
+sapply(files2source,source)
+source("~/projects/spring_2022_study/code/functions/s22_utilities.R")
+
+library(profvis)
+```
+
+```{r}
+sim_15_agg_regskew <- read_sim("sim_15_agg_regskew",path_to_project_directory)
+sim_15_agg_regskew_weakfo <- read_sim("sim_15_agg_regskew_weakfo",path_to_project_directory)
+
+sim_14_agg_rs <- read_sim("sim_aggr_rs_14",path_to_project_directory)
+sim_14_agg_rs_weakfo <- read_sim("sim_aggr_rs_weakfo",path_to_project_directory)
+
+sim_14_agg_ls <- read_sim("sim_aggr_ls",path_to_project_directory)
+sim_14_agg_ls_weakfo <- read_sim("sim_aggr_ls_weakfo",path_to_project_directory)
+
+sim_14_comp_ls <- read_sim("sim_comp_ls",path_to_project_directory)
+sim_14_comp_ls_weakfo <- read_sim("sim_14_comp_ls_weakfo",path_to_project_directory)
+
+sim_14_flat_ls <- read_sim("sim_flat_ls",path_to_project_directory)
+sim_14_flat_ls_weakfo <- read_sim("sim_flat_ls_weakfo",path_to_project_directory)
+```
+
+```{r}
+sim_15_agg_regskew$d_cor_grid
+sim_15_agg_regskew_weakfo$d_cor_grid
+```
+
+```{r}
+sim_14_agg_rs$d_cor_grid
+sim_14_agg_rs_weakfo$d_cor_grid
+```
+
+```{r}
+sim_14_agg_ls$d_cor_grid
+sim_14_agg_ls_weakfo$d_cor_grid
+```
+
+```{r}
+sim_14_comp_ls$d_cor_grid
+sim_14_comp_ls_weakfo$d_cor_grid
+```
+
+```{r}
+sim_14_flat_ls$d_cor_grid
+sim_14_flat_ls_weakfo$d_cor_grid
+```
+
