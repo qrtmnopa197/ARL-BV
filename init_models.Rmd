@@ -1,0 +1,396 @@
+---
+title: "initial_ARL_8_26"
+author: "Daniel P"
+date: '2022-08-26'
+output: html_document
+---
+
+# Overview
+This markdown contains an initial round of affective RL models based on a preliminary affect model. These were conducted to get a rough, initial sense for what effects, if any, of affect on RL exist.
+
+# Setting up
+Loading in functions; setting paths and options.
+```{r 1, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+options(mc.cores=6)
+
+##SET MANUALLY
+path_to_project_directory <- "~/projects/ARL/"
+path_to_s22 <- "~/projects/spring_2022_study/"
+##############
+stan_model_dir <- paste0(path_to_project_directory,"code/stan_models/init_mods/")
+model_out_dir <- paste0(path_to_project_directory,"output/results/stan_model_fits/init_mod_fits/")
+
+library(GGally)
+library(cmdstanr)
+library(tidyverse)
+library(tidybayes)
+library(loo)
+library(bayesplot)
+library(sigmoid)
+
+source(paste0(path_to_project_directory,"code/functions/arl_utilities.R"))
+source(paste0(path_to_s22,"code/functions/s22_utilities.R"))
+source(paste0(path_to_s22,"code/functions/stan_utilities.R"))
+source(paste0(path_to_s22,"code/functions/fit_stan_model.R"))
+```
+
+# Loading/creating dataset
+```{r}
+trials <- read.csv(paste0(path_to_project_directory,"analysis_data/trial_level_data_all_subs_2023-03-13_18_50_55.csv")) %>% filter(.,!(id %in% c(87145,87877,88816,85663))) %>% filter(choice != "late") %>% mutate(rit = 1:nrow(trials))
+trials <- add_sub_indices(trials) #add subject indices
+```
+
+Run MLM on valence ratings, and calculate related varibles
+```{r}
+#fit MLM
+trials_aff <- filter(trials,!is.na(val_rat))
+val_fit <- lmer(valrat_z ~ reward + fake_out + (reward + fake_out|id), trials_aff)
+#create a df with the residual
+trials_aff_resid <- data.frame("rit"=trials_aff$rit,"resid"=residuals(val_fit))
+trials_fi <- left_join(trials,trials_aff_resid,by="rit")
+
+#As a quick and dirty solution to imputing missing values, simply use the predictions of the MLM fixed effects to do so
+for(row in 1:nrow(trials_fi)){
+  if(is.na(trials_fi$valrat_z[row])){
+    trials_fi$valrat_z[row] <- -0.104222 + trials_fi$reward[row]*0.294666 + trials_fi$fake_out[row]*-0.036342
+    trials_fi$resid[row] <- 0
+  }
+}
+```
+
+
+# Running/loading models
+```{r}
+rough_comb_model <- fit_stan_model(stan_file=paste0(stan_model_dir,"rough_comb_model.stan"),
+                                   model_out_dir=model_out_dir,
+                                   skip = c("waic","check_csvs"),
+                                   raw_data=trials_fi,
+                                   study = "arl",
+                                   n_t = 112,
+                                   chains = 3)
+
+rough_money <- fit_stan_model(stan_file=paste0(stan_model_dir,"rough_money.stan"),
+                                   model_out_dir=model_out_dir,
+                                   skip = c("waic","check_csvs"),
+                                   raw_data=trials_fi,
+                                   study = "arl",
+                                   n_t = 112,
+                                   chains = 3)
+rough_money_resids <- fit_stan_model(stan_file=paste0(stan_model_dir,"rough_money_resids.stan"),
+                              model_out_dir=model_out_dir,
+                              skip = c("waic","check_csvs"),
+                              raw_data=trials_fi,
+                              study = "arl",
+                              n_t = 112,
+                              chains = 3)
+
+rough_money_fo_rgr <- fit_stan_model(stan_file=paste0(stan_model_dir,"rough_money_fo_rgr.stan"),
+                                   model_out_dir=model_out_dir,
+                                   skip = c("waic","check_csvs"),
+                                   raw_data=trials_fi,
+                                   study = "arl",
+                                   n_t = 112,
+                                   chains = 3)
+
+rough_money_fo <- fit_stan_model(stan_file=paste0(stan_model_dir,"rough_money_fo.stan"),
+                                   model_out_dir=model_out_dir,
+                                   skip = c("waic","check_csvs"),
+                                   raw_data=trials_fi,
+                                   study = "arl",
+                                   n_t = 112,
+                                   chains = 3)
+
+rough_money_fo_medsplit <- fit_stan_model(stan_file=paste0(stan_model_dir,"rough_money_fo.stan"),
+                                 model_out_dir=model_out_dir,
+                                 skip = c("waic","check_csvs"),
+                                 raw_data=trials_fi_medsplit,
+                                 study = "arl",
+                                 n_t = 112,
+                                 chains = 3)
+
+rough_comb_model_medsplit <- fit_stan_model(stan_file=paste0(stan_model_dir,"rough_comb_model.stan"),
+                                   model_out_dir=model_out_dir,
+                                   skip = c("waic","check_csvs"),
+                                   raw_data=trials_fi_medsplit,
+                                   study = "arl",
+                                   n_t = 112,
+                                   chains = 3)
+
+rough_money_fo_correctrgr <- fit_stan_model(stan_file=paste0(stan_model_dir,"rough_money_fo_correctrgr.stan"),
+                                 model_out_dir=model_out_dir,
+                                 skip = c("waic","check_csvs"),
+                                 raw_data=trials_fi,
+                                 study = "arl",
+                                 n_t = 112,
+                                 chains = 3)
+
+rough_money_fo_rgrnoerr <- fit_stan_model(stan_file=paste0(stan_model_dir,"rough_money_fo_rgrnoerr.stan"),
+                                 model_out_dir=model_out_dir,
+                                 skip = c("waic","check_csvs"),
+                                 raw_data=trials_fi,
+                                 study = "arl",
+                                 n_t = 112,
+                                 chains = 3)
+rough_money_fixedfo <- fit_stan_model(stan_file=paste0(stan_model_dir,"rough_money_fixedfo.stan"),
+                                 model_out_dir=model_out_dir,
+                                 skip = c("waic","check_csvs"),
+                                 raw_data=trials_fi,
+                                 study = "arl",
+                                 n_t = 112,
+                                 chains = 3)
+rough_affect
+rough_money_fo
+```
+
+# Review models
+
+```{r}
+rough_comb_model$diagnostics
+rough_comb_model$diagnostics$Rhat %>% filter(sd != 0)
+rough_comb_model$diagnostics$ESS %>% filter(sd != 0)
+```
+
+```{r}
+filt_sum(rough_comb_model$sum,"mu")
+```
+
+```{r}
+rcm_draws <- rough_comb_model$fit$draws()
+mcmc_areas(
+  rcm_draws,
+  area_method = "scaled height",
+  pars = c("asens_mu"),
+  prob = 0.8, # 80% intervals
+  prob_outer = 0.99, # 99%
+  point_est = "mean"
+)
+```
+
+```{r}
+rough_comb_model_testtranspose$diagnostics
+rough_comb_model_testtranspose$diagnostics$Rhat %>% filter(sd != 0)
+rough_comb_model_testtranspose$diagnostics$ESS %>% filter(sd != 0)
+```
+
+```{r}
+fsml_compare(rough_comb_model,rough_comb_model_testtranspose)
+```
+
+```{r}
+filt_sum(rough_comb_model_testtranspose$sum,"mu")
+filt_sum(rough_comb_model$sum,"mu")
+```
+
+```{r}
+rcmtt_draws <- rough_comb_model_testtranspose$fit$draws()
+mcmc_areas(
+  rcmtt_draws,
+  area_method = "scaled height",
+  pars = c("asens_mu"),
+  prob = 0.95, # 80% intervals
+  prob_outer = 1, # 99%
+  point_est = "mean"
+)
+mcmc_areas(
+  rcmtt_draws,
+  area_method = "scaled height",
+  pars = c("beta_mu"),
+  prob = 0.95, # 80% intervals
+  prob_outer = 1, # 99%
+  point_est = "mean"
+)
+```
+
+```{r}
+fsml_compare(rough_money,rough_comb_model_testtranspose,rough_affect)
+fsml_compare(rough_money,rough_affect)
+```
+
+```{r}
+rough_money_fo$diagnostics
+rough_money_fo$diagnostics$Rhat %>% filter(sd != 0)
+rough_money_fo$diagnostics$ESS %>% filter(sd != 0)
+```
+
+```{r}
+fsml_compare(rough_money_fo,rough_money)
+```
+```{r}
+rmf_draws <- rough_money_fo$fit$draws()
+mcmc_areas(
+  rmf_draws,
+  area_method = "scaled height",
+  pars = c("fsens_mu"),
+  prob = 0.8, # 80% intervals
+  prob_outer = 0.95, # 99%
+  point_est = "mean"
+)
+mcmc_areas(
+  rmf_draws,
+  area_method = "scaled height",
+  pars = c("flearn_mu"),
+  prob = 0.8, # 80% intervals
+  prob_outer = 0.95, # 99%
+  point_est = "mean"
+)
+```
+```{r}
+rough_money_resids$diagnostics
+rough_money_resids$diagnostics$Rhat %>% filter(sd != 0)
+rough_money_resids$diagnostics$ESS %>% filter(sd != 0)
+```
+
+```{r}
+fsml_compare(rough_money,rough_money_resids)
+```
+
+```{r}
+rmr_draws <- rough_money_resids$fit$draws()
+mcmc_areas(
+  rmr_draws,
+  area_method = "scaled height",
+  pars = c("asens_mu"),
+  prob = 0.8, # 80% intervals
+  prob_outer = 1, # 99%
+  point_est = "mean"
+)
+```
+
+```{r}
+fo_table <- select(trials,sub_index,fo_b) %>% unique()
+fsens_zs <- filter(rough_money_fo$sum,grepl("fsens_z",variable))
+cor.test(fo_table$fo_b,fsens_zs$mean)
+```
+```{r}
+high_fos <- filter(fo_table,fo_b <= median(fo_table$fo_b))
+```
+
+```{r}
+rough_money_fo_rgr$diagnostics
+filter(rough_money_fo_rgr$diagnostics$Rhat,sd != 0)
+filter(rough_money_fo_rgr$diagnostics$ESS,sd != 0)
+```
+
+```{r}
+view(filter(rough_money_fo_rgr$sum,grepl("_r",variable)))
+view(filter(rough_money_fo$sum,grepl("mu",variable)))
+```
+
+```{r}
+rmfr_draws <- rough_money_fo_rgr$fit$draws()
+mcmc_areas(
+  rmfr_draws,
+  area_method = "scaled height",
+  pars = c("fsens_fob_r"),
+  prob = 0.9, # 80% intervals
+  prob_outer = 1, # 99%
+  point_est = "mean"
+)
+```
+```{r}
+view()
+fo_b <- filter(rough_money_fo_rgr$sum,grepl("fo_b\\[",variable))
+fo_b_medsplit <- filter(fo_b,mean < median(fo_b$mean))
+rewb <- filter(rough_money_fo_rgr$sum,grepl("reward_b\\[",variable))
+means <- data.frame(rewb_mean=rewb$mean,fob_mean=fo_b$mean)
+rats <- means %>% mutate(ratio = fob_mean/rewb_mean, sub = 1:nrow(rats))
+rats_medsplit <- filter(rats,ratio < median(rats$ratio))
+
+trials_fi_medsplit <- filter(trials_fi,sub_index %in% rats_medsplit$sub)
+```
+
+```{r}
+rough_money_fo_medsplit$diagnostics
+filter(rough_money_fo_medsplit$diagnostics$Rhat, sd!=0)
+filter(rough_money_fo_medsplit$diagnostics$ESS, sd!=0)
+```
+```{r}
+rmfm_draws <- rough_money_fo_medsplit$fit$draws()
+mcmc_areas(
+  rmfm_draws,
+  area_method = "scaled height",
+  pars = c("fsens_mu"),
+  prob = 0.8, # 80% intervals
+  prob_outer = .95, # 99%
+  point_est = "mean"
+)
+```
+```{r}
+rcmm_draws <- rough_comb_model_medsplit$fit$draws()
+mcmc_areas(
+  rcmm_draws,
+  area_method = "scaled height",
+  pars = c("asens_mu"),
+  prob = 0.95, # 80% intervals
+  prob_outer = 1, # 99%
+  point_est = "mean"
+)
+mcmc_areas(
+  rcmm_draws,
+  area_method = "scaled height",
+  pars = c("beta_mu"),
+  prob = 0.95, # 80% intervals
+  prob_outer = 1, # 99%
+  point_est = "mean"
+)
+```
+
+```{r}
+fsml_compare(rough_money_fo_correctrgr,rough_money_fo,rough_money)
+```
+
+```{r}
+rmfc_draws <- rough_money_fo_correctrgr$fit$draws()
+mcmc_areas(
+  rmfc_draws,
+  area_method = "scaled height",
+  pars = c("fob_b"),
+  prob = 0.95, # 80% intervals
+  prob_outer = .99, # 99%
+  point_est = "mean"
+)
+mcmc_areas(
+  rmfc_draws,
+  area_method = "scaled height",
+  pars = c("rsq_fob_fsens"),
+  prob = 0.8, # 80% intervals
+  prob_outer = .95, # 99%
+  point_est = "mean"
+)
+mcmc_areas(
+  rmfc_draws,
+  area_method = "scaled height",
+  pars = c("fsens_int"),
+  prob = 0.8, # 80% intervals
+  prob_outer = .95, # 99%
+  point_est = "mean"
+)
+```
+```{r}
+rough_money_fo_rgrnoerr$diagnostics
+filter(rough_money_fo_rgrnoerr$diagnostics$Rhat,sd != 0)
+```
+```{r}
+rmfr_draws <- rough_money_fo_rgrnoerr$fit$draws()
+mcmc_areas(
+  rmfr_draws,
+  area_method = "scaled height",
+  pars = c("fsens_int"),
+  prob = 0.95, # 80% intervals
+  prob_outer = 1, # 99%
+  point_est = "mean"
+)
+
+mcmc_areas(
+  rmfr_draws,
+  area_method = "scaled height",
+  pars = c("fob_b"),
+  prob = 0.95, # 80% intervals
+  prob_outer = .95, # 99%
+)
+```
+```{r}
+fsml_compare(rough_money_fo_rgrnoerr,rough_money_fixedfo)
+```
+
