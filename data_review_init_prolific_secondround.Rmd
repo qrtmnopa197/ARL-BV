@@ -1,0 +1,107 @@
+---
+title: "data_review_4_17"
+author: "Daniel P"
+date: '2023-04-17'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+path_to_project_directory <- "~/projects/ARL_bv/"
+path_to_arl <- "~/projects/ARL/"
+path_to_s22 <- "~/projects/spring_2022_study/"
+
+source(paste0(path_to_s22,"code/functions/s22_utilities.R")) #get s22 functions
+source(paste0(path_to_arl,"code/functions/arl_utilities.R")) 
+library(tidyverse)
+library(lme4)
+library(MuMIn)
+```
+
+```{r}
+include_subs <- c(
+"63e42833b46647e4119fbcb9",
+"609b6c918ad180505fefd919",
+"62827896d034545333f4610c",
+"6107088428de1480e9588e38",
+"5b060d9e68eff50001d1a2c1",
+"5ecbfc627a51250bfb1f297f",
+"5c4bc384b4f50700015dd0a3",
+"5fbae54831099083583afff0",
+"5e4465013f75e52fc82f7096",
+"5dd43c63390fb6428d4974f0",
+"6400d88d96f94773b356d8f1",
+"60b8e59ef963cd7c6989cd37",
+"6159fe7811a7e1b94401c33f",
+"60ff46f0d588d3f6f641a0ee",
+"6019bbb66e5c2815ba3728b6",
+"60b64f8fcb8c7f069a44a0e9",
+"6105f4dcf71fdd55fa93b7f5",
+"63c25e4d8faec4d0ce9b0971",
+"638b595f301bf0f33f345084",
+"63b4dd8e84ed3fa65db72f4d")
+
+
+trials <- read.csv(paste0(path_to_project_directory,"analysis_data/old_analysis_data/trial_level_data_all_subs_2023-05-15_15_24_02.csv")) %>% filter(id %in% include_subs) %>% filter(choice != "late")
+sub <- read.csv(paste0(path_to_project_directory,"analysis_data/old_analysis_data/sub_level_data_all_subs_2023-05-15_15_24_02.csv")) %>% filter(id %in% include_subs)
+
+```
+
+
+```{r}
+dr_vars <- c("valreg_rsq","bv_b","fres_b","fres_bv_ratio","percent_left_b1","percent_left_b2","percent_left_b3","percent_left")
+plot_sub_level_vars(sub,dr_vars,path_to_project_directory,type="dr") #create and save plot grids
+```
+
+```{r}
+sub$age <- as.numeric(sub$age)
+age_no_skips <- filter(sub,age < 900)
+plot_hist(age_no_skips,"age") 
+```
+
+```{r}
+sum(sub$gender=="Male")
+```
+
+```{r}
+sum(sub$gender=="Female")
+```
+
+```{r}
+sum(sub$gender=="Non-binary")
+```
+
+```{r}
+trials$pair_pres_num <- rep(c(1:48),nrow(sub)*3)
+percentage_plots(trials,"stay")
+```
+
+```{r}
+trials_aff <- trials %>% filter(!is.na(valrat_z))
+
+trials_aff <- trials_aff %>% mutate(out_nfr = ifelse(show_fres==0,out,0),
+                            out_fres = ifelse(show_fres==1,out,0),
+                            bv_fres = ifelse(show_fres==1,box_val,0),
+                            valrat_fres = ifelse(show_fres ==1,valrat_z,0),
+                            valrat_nofres = ifelse(show_fres == 1,0,valrat_z))
+val_fit <- lm(valrat_z ~ out_nfr + out_fres + bv_fres, trials_aff)
+summary(val_fit)
+
+```
+
+```{r}
+stay_fit <- lmer(stay ~ out_nfr + out_fres + bv_fres + (1|id),trials_aff)
+summary(stay_fit)
+```
+
+```{r}
+low_bv <- filter(sub,bv_b < -.06)
+medsplit <- trials_aff %>% filter(id %in% low_bv$id)
+stay_medsplit <- lmer(stay ~ out_nfr + out_fres + bv_fres + (1|id),medsplit)
+summary(stay_medsplit)
+```
+```{r}
+stay_val_fit <- lmer(stay ~ out_nfr + out_fres + valrat_fres + valrat_nofres + (1|id),trials_aff)
+summary(stay_val_fit)
+```
+

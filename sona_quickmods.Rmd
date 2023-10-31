@@ -1,0 +1,179 @@
+---
+title: "Quick models for initial ARL_bv data"
+author: "Daniel P"
+date: '2022-08-26'
+output: html_document
+---
+
+# Overview
+This markdown contains an initial round of affective RL models, fit to the data collected on SONA in spring of 2023. 
+
+# Setting up
+Loading in functions; setting paths and options.
+```{r 1, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+options(mc.cores=6)
+
+##SET MANUALLY
+path_to_project_directory <- "~/projects/ARL_bv/"
+path_to_s22 <- "~/projects/spring_2022_study/"
+##############
+stan_model_dir <- paste0(path_to_project_directory,"code/stan_models/init_mods/")
+model_out_dir <- paste0(path_to_project_directory,"output/results/stan_model_fits/init_mod_fits/")
+
+library(GGally)
+library(cmdstanr)
+library(tidyverse)
+library(tidybayes)
+library(loo)
+library(bayesplot)
+library(sigmoid)
+library(lme4)
+
+source(paste0(path_to_project_directory,"code/functions/arlbv_utilities.R"))
+source(paste0(path_to_s22,"code/functions/s22_utilities.R"))
+source(paste0(path_to_s22,"code/functions/stan_utilities.R"))
+source(paste0(path_to_s22,"code/functions/fit_stan_model.R"))
+```
+
+# Loading/creating dataset
+```{r}
+exclude_subs <- c(79948,79993,87319,87358,89626,89749,88189,89623,90172,87580,89773,89833,89509,84610,89935,89416,89788,89587,89536,89167,87316,79864)
+trials <- read.csv(paste0(path_to_project_directory,"analysis_data/old_analysis_data/trial_level_data_all_subs_2023-05-03_16_58_20.csv")) %>% filter(.,!(id %in% exclude_subs)) %>% filter(choice != "late")
+trials <- trials %>% mutate(rit = 1:nrow(trials))
+trials <- add_sub_indices(trials) #add subject indices
+```
+
+Run MLM on valence ratings, and calculate related varibles
+```{r}
+#fit MLM
+trials <- trials %>% mutate(out_nfr = ifelse(show_fres==0,out,0),
+                                    out_fres = ifelse(show_fres==1,out,0),
+                                    bv_fres = ifelse(show_fres==1,box_val,0))
+trials_aff <- filter(trials,!is.na(valrat_z))
+val_fit <- lm(valrat_z ~ out_nfr + out_fres + bv_fres, trials_aff)
+summary(val_fit)
+trials_fi <- trials
+#As a quick and dirty solution to imputing missing values, simply use the predictions of the regression to do so
+for(row in 1:nrow(trials_fi)){
+  if(is.na(trials_fi$valrat_z[row])){
+    trials_fi$valrat_z[row] <- .020945 + trials_fi$out_nfr[row]*.206852 + trials_fi$out_fres[row]*.475936 + trials_fi$bv_fres[row]*-0.029037
+  }
+}
+```
+
+```{r}
+sub <- read.csv(paste0(path_to_project_directory,"analysis_data/old_analysis_data/sub_level_data_all_subs_2023-05-03_16_58_20.csv")) %>% filter(.,!(id %in% exclude_subs))
+low_bv <- filter(sub,bv_b < -.025)
+tfi_medsplit <- trials_fi %>% filter(id %in% low_bv$id)
+```
+
+
+# Running/loading models
+```{r}
+money <- fit_stan_model(stan_file=paste0(stan_model_dir,"init_money.stan"),
+                                   model_out_dir=model_out_dir,
+                                   skip = c("waic","check_csvs"),
+                                   raw_data=trials_fi,
+                                   study = "arlbv",
+                                   n_t = 144,
+                                   chains = 3)
+moaff <- fit_stan_model(stan_file=paste0(stan_model_dir,"init_moaff.stan"),
+                                   model_out_dir=model_out_dir,
+                                   skip = c("waic","check_csvs"),
+                                   raw_data=trials_fi,
+                                   study = "arlbv",
+                                   n_t = 144,
+                                   chains = 3)
+mo_bv <- fit_stan_model(stan_file=paste0(stan_model_dir,"init_mo_bv.stan"),
+                                   model_out_dir=model_out_dir,
+                                   skip = c("waic","check_csvs"),
+                                   raw_data=trials_fi,
+                                   study = "arlbv",
+                                   n_t = 144,
+                                   chains = 3)
+
+mo_bv_ms <- fit_stan_model(stan_file=paste0(stan_model_dir,"init_mo_bv_medsplit.stan"),
+                                   model_out_dir=model_out_dir,
+                                   skip = c("waic","check_csvs"),
+                                   raw_data=tfi_medsplit,
+                                   study = "arlbv",
+                                   n_t = 144,
+                                   chains = 3)
+```
+
+# Review models
+
+
+
+
+
+
+
+
+```{r}
+money$diagnostics
+money$diagnostics$Rhat %>% filter(sd != 0)
+money$diagnostics$ESS %>% filter(sd != 0)
+```
+
+```{r}
+filt_sum(money$sum,"mu")
+```
+
+```{r}
+cor(filter(mo_bv$sum,grepl("bsens_z",variable))$mean,sub$bv_b)
+```
+
+```{r}
+mobvms_draws <- mo_bv_ms$fit$draws()
+mcmc_areas(
+  mobvms_draws,
+  area_method = "scaled height",
+  pars = c("bsens_mu"),
+  prob = 0.95, # 80% intervals
+  prob_outer = .99, # 99%
+  point_est = "mean"
+)
+```
+```{r}
+fsml_compare(money,mo_bv)
+```
+
+```{r}
+fsml_compare(moaff,money)
+```
+
+
+```{r}
+fsml_compare()
+```
+
+
+```{r}
+mobv_draws <- mo_bv$fit$draws()
+mcmc_areas(
+  mobv_draws,
+  area_method = "scaled height",
+  pars = c("bsens_mu"),
+  prob = 0.95, # 80% intervals
+  prob_outer = .99, # 99%
+  point_est = "mean"
+)
+```
+```{r}
+ncp_mean_hist(mo_bv$sum,"bsens")
+```
+
+
+```{r}
+moaff_draws <- moaff$fit$draws()
+mcmc_areas(
+  moaff_draws,
+  area_method = "scaled height",
+  pars = c("asens_mu"),
+  prob = 0.95, # 80% intervals
+  prob_outer = .99, # 99%
+  point_est = "mean"
+)
+```

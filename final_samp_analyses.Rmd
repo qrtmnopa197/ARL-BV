@@ -1,0 +1,211 @@
+---
+title: "Analysis for final, prereg. sample of ARL-BV"
+author: "Daniel P"
+output: html_document
+---
+
+Set up
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+options(mc.cores=6)
+
+path_to_project_directory <- "~/projects/ARL_bv/"
+path_to_arl <- "~/projects/ARL/"
+path_to_s22 <- "~/projects/spring_2022_study/"
+
+stan_model_dir<- paste0(path_to_project_directory,"code/stan_models/final_samp_mods/")
+model_out_dir <- paste0(path_to_project_directory,"output/results/stan_model_fits/final_samp_fits/")
+
+#load custom functions
+source(paste0(path_to_s22,"code/functions/s22_utilities.R")) 
+source(paste0(path_to_s22,"code/functions/stan_utilities.R"))
+source(paste0(path_to_arl,"code/functions/arl_utilities.R")) 
+source(paste0(path_to_project_directory,"code/functions/arlbv_utilities.R")) 
+source(paste0(path_to_s22,"code/functions/fit_stan_model.R"))
+
+library(tidyverse)
+library(cmdstanr)
+library(loo)
+library(bayesplot)
+
+trials <- read.csv(paste0(path_to_project_directory,"analysis_data/trial_level_data_all_subs_2023-10-17_19_06_02.592573.csv"))
+subs <- read.csv(paste0(path_to_project_directory,"analysis_data/sub_level_data_all_subs_2023-10-17_19_06_02.592573.csv"))
+```
+
+Run through QC
+```{r}
+sub_hard_fail <- subs %>% filter(att_checks_passed < 5 |
+                                 valrat_skipped_percent > .1 |
+                                 late_percent > .2 |
+                                 consecutive_late_choices > 9 |
+                                 trials_completed < 144 |
+                                 sd_valrat < .05 |
+                                 percent_left > .8 |
+                                 percent_left < .2 |
+                                 percent_left_b1 < .1 |
+                                 percent_left_b1 > .9 |
+                                 percent_left_b2 < .1 |
+                                 percent_left_b2 > .9 |
+                                 percent_left_b3 < .1 |
+                                 percent_left_b3 > .9 |
+                                 answers_incorrect > 2)
+
+#count the number of soft QC cutoffs each subject meets
+subs$softs <- 0
+for(i in 1:nrow(subs)){
+  subs$softs[i] <- length(which(c(subs$att_checks_passed[i] == 5,subs$valrat_skipped_percent[i] > .05, subs$late_percent[i] > .15,
+                                  subs$sd_valrat[i] < .1, subs$percent_left[i] > .75, subs$percent_left[i] < .25,
+                                  subs$percent_left_b1[i] > .85, subs$percent_left_b1[i] < .15, subs$percent_left_b2[i] > .85, 
+                                  subs$percent_left_b2[i] < .15,subs$percent_left_b3[i] > .85, subs$percent_left_b3[i] < .15,subs$answers_incorrect[i] > 1)))
+}
+
+sub_soft_fail <- filter(subs,softs >= 2) #identify those who meet more than 2 soft cutoffs
+
+subs_to_exclude <- unique(c(sub_hard_fail$id,sub_soft_fail$id)) #get subjects who failed either set of criteria
+
+#clean data
+trials <- trials %>% filter(!(id %in% subs_to_exclude)) %>% filter(choice != "late") 
+subs <- subs %>% filter(!(id %in% subs_to_exclude))
+
+length(subs_to_exclude)/(nrow(subs)+length(subs_to_exclude)) #get percent excluded
+```
+
+Data transformations
+```{r}
+trials <- add_sub_indices(trials) #add subject indices to the df. These will match the indices used in Stan.
+trials <- add_probe_number(trials,newcol="rat_number",val_col="valrat_z") #add rating number
+
+#add a column with completed trial numbers - the trial indices if you ignore late trials. These will match the "t" trial numbers used in the Stan models
+trials <- do.call(rbind,by(trials,trials$sub_index,add_trials_nl))
+trials$overall_trial_nl <- 1:nrow(trials) #get the overall trial number ignoring late trials and collapsing across subjects
+```
+
+Some additional data review
+
+```{r}
+dr_vars <- c("valreg_rsq","bv_b","fres_b","fres_bv_ratio")
+plot_sub_level_vars(subs,dr_vars,path_to_project_directory,type="dr") #create and save plot grids
+```
+
+```{r}
+subs$age <- as.numeric(subs$age)
+age_no_skips <- filter(subs,age < 900)
+plot_hist(age_no_skips,"age") 
+```
+
+```{r}
+sum(subs$gender=="Male")
+```
+
+```{r}
+sum(subs$gender=="Female")
+```
+
+```{r}
+sum(subs$gender=="Non-binary")
+```
+
+```{r}
+trials$pair_pres_num <- rep(c(1:48),65*3)
+percentage_plots(trials,"stay")
+```
+
+# Preregistered analyses
+
+Fit first couple of models
+```{r}
+one_q <- fit_stan_model(stan_file=paste0(stan_model_dir,"one_q.stan"),
+                                   model_out_dir=model_out_dir,
+                                   raw_data=trials,
+                                   study = "arlbv",
+                                   n_t = 144)
+two_q <- fit_stan_model(stan_file=paste0(stan_model_dir,"two_q.stan"),
+                                   model_out_dir=model_out_dir,
+                                   raw_data=trials,
+                                   study = "arlbv",
+                                   n_t = 144)
+```
+
+Check diagnostics
+```{r}
+one_q$diagnostics
+one_q$diagnostics$Rhat %>% filter(sd != 0)
+one_q$diagnostics$ESS %>% filter(sd != 0)
+```
+
+```{r}
+two_q$diagnostics
+two_q$diagnostics$Rhat %>% filter(sd != 0)
+two_q$diagnostics$ESS %>% filter(sd != 0)
+```
+
+Compare
+```{r}
+fsml_compare(one_q,two_q)
+```
+
+Fit winner with side bias
+```{r}
+_q_sidebias <- fit_stan_model(stan_file=paste0(stan_model_dir,"_q_sidebias.stan"),
+                                   model_out_dir=model_out_dir,
+                                   raw_data=trials,
+                                   study = "arlbv",
+                                   n_t = 144)
+```
+
+Check diagnostics
+```{r}
+_q_sidebias$diagnostics
+_q_sidebias$diagnostics$Rhat %>% filter(sd != 0)
+_q_sidebias$diagnostics$ESS %>% filter(sd != 0)
+```
+
+Compare
+```{r}
+fsml_compare(_q,_q_sidebias)
+```
+
+# Hypothesis tests
+
+Posterior for effect of affect on choice
+```{r}
+afsm_draws <- $fit$draws("aff_fr_sens_mu")
+mcmc_areas(
+  afsm_draws,
+  area_method = "scaled height",
+  prob = 0.5,
+  prob_outer = 0.9, 
+  point_est = "median"
+)
+```
+
+Posterior for effect of reward on choice
+```{r}
+rfsm_draws <- $fit$draws("rew_fr_sens_mu")
+mcmc_areas(
+  rfsm_draws,
+  area_method = "scaled height",
+  prob = 0.5,
+  prob_outer = 0.9, 
+  point_est = "median"
+)
+```
+
+Posteriors for regression parameters
+```{r}
+reg_draws <- $fit$draws(c("B_rew_fr_mu","B_rew_nf_mu","B_bv_fr_mu","B_auto_mu"))
+mcmc_areas(
+  reg_draws,
+  area_method = "scaled height",
+  prob = 0.5,
+  prob_outer = 0.95, 
+  point_est = "median"
+)
+```
+
+# Other model parameters
+
+```{r}
+
+```
+

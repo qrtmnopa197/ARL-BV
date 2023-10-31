@@ -1,0 +1,430 @@
+---
+title: "Analysis for all $2/05 data"
+author: "Daniel P"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+options(mc.cores=6)
+path_to_project_directory <- "~/projects/ARL_bv/"
+path_to_arl <- "~/projects/ARL/"
+path_to_s22 <- "~/projects/spring_2022_study/"
+
+source(paste0(path_to_s22,"code/functions/s22_utilities.R")) #get s22 functions
+source(paste0(path_to_s22,"code/functions/stan_utilities.R"))
+source(paste0(path_to_arl,"code/functions/arl_utilities.R")) 
+source(paste0(path_to_project_directory,"code/functions/arlbv_utilities.R")) 
+source(paste0(path_to_s22,"code/functions/fit_stan_model.R"))
+
+library(tidyverse)
+library(lme4)
+library(MuMIn)
+library(GGally)
+library(cmdstanr)
+library(tidyverse)
+library(tidybayes)
+library(loo)
+library(bayesplot)
+library(sigmoid)
+
+stan_model_dir <- paste0(path_to_project_directory,"code/stan_models/clean_mods/")
+model_out_dir <- paste0(path_to_project_directory,"output/results/stan_model_fits/clean_mods/")
+
+trials <- read.csv(paste0(path_to_project_directory,"analysis_data/trial_level_data_all_subs_2023-06-11_11_16_50.csv"))
+subs <- read.csv(paste0(path_to_project_directory,"analysis_data/sub_level_data_all_subs_2023-06-11_11_16_50.csv"))
+```
+
+```{r}
+sub_hard_fail <- subs %>% filter(att_checks_passed < 5 |
+                                 valrat_skipped_percent > .1 |
+                                 late_percent > .2 |
+                                 consecutive_late_choices > 9 |
+                                 trials_completed < 144 |
+                                 sd_valrat < .1 |
+                                 percent_left > .8 |
+                                 percent_left < .2 |
+                                 percent_left_b1 < .1 |
+                                 percent_left_b1 > .9 |
+                                 percent_left_b2 < .1 |
+                                 percent_left_b2 > .9 |
+                                 percent_left_b3 < .1 |
+                                 percent_left_b3 > .9 |
+                                 answers_incorrect > 2)
+
+#count the number of soft QC cutoffs each subject meets
+subs$softs <- 0
+for(i in 1:nrow(subs)){
+  subs$softs[i] <- length(which(c(subs$att_checks_passed[i] == 5,subs$valrat_skipped_percent[i] > .05, subs$late_percent[i] > .15,
+                                  subs$sd_valrat[i] < .13, subs$percent_left[i] > .75, subs$percent_left[i] < .25,
+                                  subs$percent_left_b1[i] > .83, subs$percent_left_b1[i] < .17, subs$percent_left_b2[i] > .83, 
+                                  subs$percent_left_b2[i] < .17,subs$percent_left_b3[i] > .83, subs$percent_left_b3[i] < .17,subs$answers_incorrect[i] > 1)))
+}
+
+sub_soft_fail <- filter(subs,softs >= 2) #identify those who meet more than 2 soft cutoffs
+
+subs_to_exclude <- unique(c(sub_hard_fail$id,sub_soft_fail$id)) #mark subjects who fail on either hard or soft or criteria for exclusion
+
+trials <- trials %>% filter(!(id %in% subs_to_exclude)) %>% filter(choice != "late") 
+subs <- subs %>% filter(!(id %in% subs_to_exclude))
+```
+
+Data transformations
+```{r}
+trials <- add_sub_indices(trials) #add subject indices to the df. These will match the indices used in Stan.
+trials <- add_probe_number(trials,newcol="rat_number",val_col="valrat_z") #add rating number
+
+#add a column with completed trial numbers - the trial indices if you ignore late trials. These will match the "t" trial numbers used in the Stan models
+trials <- do.call(rbind,by(trials,trials$sub_index,add_trials_nl))
+trials$overall_trial_nl <- 1:nrow(trials) #get the overall trial number ignoring late trials and collapsing across subjects
+```
+
+```{r}
+#Get residual affect on each trial, after regressing out rewards
+trials_aff <- trials %>% filter(!is.na(valrat_z))
+trials_aff <- trials_aff %>% mutate(out_nfr = ifelse(show_fres==0,out,0),
+                            out_fres = ifelse(show_fres==1,out,0),
+                            bv_fres = ifelse(show_fres==1,box_val,0))
+val_fit_res <- lm(valrat_z ~ out_nfr + out_fres, trials_aff)
+to_join <- data.frame(resids = resid(val_fit_res),"overall_trial_nl"=trials_aff$overall_trial_nl)
+trials <- left_join(trials,to_join)
+trials[which(is.na(trials$resids)),"resids"] <- 0
+
+#Now get the best prediction of affect you can, and fill in missing valence ratings with these predicted values
+val_fit_fi <- lmer(valrat_z ~ out_nfr + out_fres + bv_fres + (out_nfr + out_fres + bv_fres|id),trials_aff) #predict affect ratings
+predicted_val <- predict(val_fit_fi,trials_aff) #get predictions
+
+trials$fi_rat <- trials$valrat_z #filled-in affect column
+for(row in 1:nrow(trials)){
+  if(is.na(trials$fi_rat[row])){
+    trials$fi_rat[row] <- predicted_val[row] #if the valrat is NA, replace it with the predicted value
+  }
+}
+```
+```{r}
+#Get median-split data
+low_bv <- filter(subs,bv_b < median(subs$bv_b))
+medsplit <- trials %>% filter(id %in% low_bv$id)
+```
+
+```{r}
+dr_vars <- c("valreg_rsq","bv_b","fres_b","fres_bv_ratio")
+plot_sub_level_vars(subs,dr_vars,path_to_project_directory,type="dr") #create and save plot grids
+```
+
+```{r}
+subs$age <- as.numeric(subs$age)
+age_no_skips <- filter(subs,age < 900)
+plot_hist(age_no_skips,"age") 
+```
+
+```{r}
+sum(subs$gender=="Male")
+```
+
+```{r}
+sum(subs$gender=="Female")
+```
+
+```{r}
+sum(subs$gender=="Non-binary")
+```
+
+```{r}
+trials$pair_pres_num <- rep(c(1:48),65*3)
+percentage_plots(trials,"stay")
+```
+
+```{r}
+summary(val_fit_fi)
+```
+
+```{r}
+bv_fit <- lmer(stay ~ out_nfr + out_fres + bv_fres + (1|id),trials_aff)
+summary(bv_fit)
+```
+
+
+#Power analysis stuff
+
+```{r}
+trials_stayval <- trials %>% mutate(val_fres = ifelse(show_fres==1,fi_rat,0),
+                                    val_nfr = ifelse(show_fres==0,fi_rat,0),
+                                    out_fres = ifelse(show_fres==1,out,0),
+                                    out_nfr = ifelse(show_fres==0,out,0))
+stay_val_fit <- lmer(stay ~ out_nfr + out_fres + val_fres + val_nfr + (1|id),trials_stayval)
+summary(stay_val_fit)
+```
+
+
+```{r}
+#for power analysis
+ts_fres <- filter(trials_stayval,show_fres == 1) # only trials showing fres
+stay_val <- lm(stay ~ out_fres + val_fres,ts_fres)
+stay_val2 <- lm(stay ~ out_fres + val_nfr,ts_fres)
+(summary(stay_val)$r.squared-summary(stay_val2)$r.squared)*(2/3)#r squared improvement from adding val_fres
+anova(stay_val,stay_val2)
+
+stay_val3 <- lm(stay ~ val_fres,ts_fres)
+(summary(stay_val)$r.squared-summary(stay_val3)$r.squared)*(2/3)
+```
+
+```{r}
+ts_fres2 <- mutate(ts_fres,bv_fres = ifelse(show_fres==1,box_val,0))
+sv_bv <- lm(stay ~ out_nfr + out_fres + val_fres + val_nfr + bv_fres,ts_fres2)
+sv_bv2 <- lm(stay ~ out_nfr + out_fres + val_nfr + bv_fres,ts_fres2)
+```
+
+
+# Full models
+
+```{r}
+full$diagnostics
+```
+Good
+
+```{r}
+full_2strm$diagnostics
+```
+Good also
+
+```{r}
+fsml_compare(full,full_2strm)
+```
+```{r}
+f2d_corr <- full_2strm$fit$draws("bvf_w_lOmega[2,1]")
+mcmc_areas(
+  f2d_corr,
+  area_method = "scaled height",
+  prob = 0.9, # 80% intervals
+  prob_outer = .95, # 99%
+  point_est = "mean"
+)
+```
+```{r}
+f2d_bv <- full_2strm$fit$draws("bvf_w_mu[2]")
+mcmc_areas(
+  f2d_bv,
+  area_method = "scaled height",
+  prob = 0.9, # 80% intervals
+  prob_outer = .95, # 99%
+  point_est = "mean"
+)
+```
+```{r}
+f2d_aff <- full_2strm$fit$draws("asens_f_mu")
+mcmc_areas(
+  f2d_aff,
+  area_method = "scaled height",
+  prob = 0.9, # 80% intervals
+  prob_outer = .95, # 99%
+  point_est = "mean"
+)
+```
+
+```{r}
+filt_sum(full_2strm$sum,"mu")
+```
+
+```{r}
+filt_sum(full_2strm_crct$sum,"mu")
+```
+
+```{r}
+filt_sum(full$sum,"mu")
+```
+```{r}
+fsml_compare(full,full_2strm)
+```
+```{r}
+full_corr <- full$fit$draws("bvf_w_lOmega[2,1]")
+mcmc_areas(
+  full_corr,
+  area_method = "scaled height",
+  prob = 0.9, # 80% intervals
+  prob_outer = .95, # 99%
+  point_est = "mean"
+)
+```
+```{r}
+full_aff <- full$fit$draws("asens_f_mu")
+mcmc_areas(
+  full_aff,
+  area_method = "scaled height",
+  prob = 0.9, # 80% intervals
+  prob_outer = .95, # 99%
+  point_est = "mean"
+)
+```
+```{r}
+fsml_compare(rew,rew_aff)
+```
+```{r}
+rad <- rew_aff_fit$draws("af_sens_mu")
+mcmc_areas(
+  rad,
+  area_method = "scaled height",
+  prob = 0.9, # 80% intervals
+  prob_outer = .97, # 99%
+  point_est = "mean"
+)
+```
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+rew$diagnostics$num_divergent
+filter(rew$diagnostics$ESS,sd!=0)
+filter(rew$diagnostics$Rhat,sd!=0)
+```
+
+```{r}
+aff$diagnostics$num_divergent
+filter(aff$diagnostics$ESS,sd!=0)
+filter(aff$diagnostics$Rhat,sd!=0)
+```
+
+```{r}
+rew_aff$diagnostics$num_divergent
+filter(rew_aff$diagnostics$ESS,sd!=0)
+filter(rew_aff$diagnostics$Rhat,sd!=0)
+```
+
+```{r}
+fsml_compare(rew_aff,rew)
+```
+
+```{r}
+fsml_compare(rew,aff)
+```
+
+```{r}
+filt_sum(rew$sum,"mu")
+```
+
+Alarmingly low learning rate for reward, especially since the forgetting rate is quite high.
+
+```{r}
+ncp_mean_hist(rew$sum,"rewf_sens")
+```
+
+
+```{r}
+filt_sum(aff$sum,"mu")
+```
+
+Again, low learning rate for affect.
+```{r}
+filt_sum(rew_aff$sum,"mu")
+```
+
+```{r}
+ra_asens_draws <- rew_aff$fit$draws("af_sens_mu")
+mcmc_areas(
+  ra_asens_draws,
+  area_method = "scaled height",
+  prob = 0.9, # 80% intervals
+  prob_outer = 0.95, # 99%
+  point_est = "mean"
+)
+```
+Interestingly, the effect is positive even though the fit is not much improved. But this is a weird effect
+
+```{r}
+rew_bv$diagnostics$num_divergent
+filter(rew_bv$diagnostics$ESS,sd!=0)
+filter(rew_bv$diagnostics$Rhat,sd!=0)
+```
+
+```{r}
+fsml_compare(rew_bv,rew)
+```
+
+```{r}
+rb_bsens_draws <- rew_bv$fit$draws("bvf_sens_mu")
+mcmc_areas(
+  rb_bsens_draws,
+  area_method = "scaled height",
+  prob = 0.9, # 80% intervals
+  prob_outer = .95, # 99%
+  point_est = "mean"
+)
+```
+Intersting, same skewed shape here, although it improved model fit more.
+
+```{r}
+filt_sum(rew_bv$sum,"mu")
+```
+
+The learning rate for BV is again weirdly low, especially when paired with high forgetting rate
+
+```{r}
+full$diagnostics
+```
+
+```{r}
+full_asens_draws <- full$fit$draws("asens_f_mu")
+mcmc_areas(
+  full_asens_draws,
+  area_method = "scaled height",
+  prob = 0.9, # 80% intervals
+  prob_outer = .95, # 99%
+  point_est = "mean"
+)
+```
+
+```{r}
+full_bcor_draws <- full$fit$draws("bvf_w_lOmega[2,1]")
+mcmc_areas(
+  full_bcor_draws,
+  area_method = "scaled height",
+  prob = 0.9, # 80% intervals
+  prob_outer = .95, # 99%
+  point_est = "mean"
+)
+```
+Promising, but very ugly
+
+```{r}
+full_rcor_draws <- full$fit$draws("rewf_w_lOmega[2,1]")
+mcmc_areas(
+  full_rcor_draws,
+  area_method = "scaled height",
+  prob = 0.9, # 80% intervals
+  prob_outer = .95, # 99%
+  point_est = "mean"
+)
+```
+Same direction, at least.
+
+```{r}
+fsml_compare(rew_aff_md,rew_md)
+```
+```{r}
+fsml_compare(rew_bv_md,rew_md)
+```
+Not getting much purchase here.
+
+```{r}
+rb_bsens_md_draws <- rew_bv_md$fit$draws("bvf_sens_mu")
+mcmc_areas(
+  rb_bsens_md_draws,
+  area_method = "scaled height",
+  prob = 0.9, # 80% intervals
+  prob_outer = .95, # 99%
+  point_est = "mean"
+)
+```
+I suppose that's a little better.
+
+
+
+

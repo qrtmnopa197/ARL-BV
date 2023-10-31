@@ -1,0 +1,106 @@
+---
+title: "data_review_4_17"
+author: "Daniel P"
+date: '2023-04-17'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+path_to_project_directory <- "~/projects/ARL_bv/"
+path_to_arl <- "~/projects/ARL/"
+path_to_s22 <- "~/projects/spring_2022_study/"
+
+source(paste0(path_to_s22,"code/functions/s22_utilities.R")) #get s22 functions
+source(paste0(path_to_arl,"code/functions/arl_utilities.R")) 
+library(tidyverse)
+library(lme4)
+library(MuMIn)
+```
+
+```{r}
+include_subs <- c("5f9115299908a021dfcf4fae",
+"5fa86899f519ba6f291dbf41",
+"5dd1ab5dd3ac2a21600f87b8",
+"56a37d86dbe850000bfcef9d",
+"5b20c5e04c72120001f25dda",
+"645466e1bd17070ac5692eaf",
+"5a6eac90d5d4cb0001d6815a",
+"5fce736898fa590803b3b0d8",
+"5fc6a3a40fa45d0875801073",
+"5d4732b70829350016ed314d",
+"6171e8e245a38a69a90285c5",
+"5e8bfe353faaeb0efb3eba88",
+"5e9fb21375fbf815d491d394",
+"612fb53d3127a179555c1ae3")
+
+
+trials <- read.csv(paste0(path_to_project_directory,"analysis_data/old_analysis_data/trial_level_data_all_subs_2023-05-14_12_50_48.csv")) %>% filter(id %in% include_subs) %>% filter(choice != "late")
+sub <- read.csv(paste0(path_to_project_directory,"analysis_data/old_analysis_data/sub_level_data_all_subs_2023-05-14_12_50_48.csv")) %>% filter(id %in% include_subs)
+
+```
+
+
+```{r}
+dr_vars <- c("valreg_rsq","bv_b","fres_b","fres_bv_ratio","percent_left_b1","percent_left_b2","percent_left_b3","percent_left")
+plot_sub_level_vars(sub,dr_vars,path_to_project_directory,type="dr") #create and save plot grids
+```
+
+```{r}
+sub$age <- as.numeric(sub$age)
+age_no_skips <- filter(sub,age < 900)
+plot_hist(age_no_skips,"age") 
+```
+
+```{r}
+sum(sub$gender=="Male")
+```
+
+```{r}
+sum(sub$gender=="Female")
+```
+
+```{r}
+sum(sub$gender=="Non-binary")
+```
+
+```{r}
+trials$pair_pres_num <- rep(c(1:48),nrow(sub)*3)
+percentage_plots(trials,"stay")
+```
+
+```{r}
+trials_aff <- trials %>% filter(!is.na(valrat_z))
+
+trials_aff <- trials_aff %>% mutate(out_nfr = ifelse(show_fres==0,out,0),
+                            out_fres = ifelse(show_fres==1,out,0),
+                            bv_fres = ifelse(show_fres==1,box_val,0),
+                            valrat_fres = ifelse(show_fres ==1,valrat_z,0),
+                            valrat_nofres = ifelse(show_fres == 1,0,valrat_z))
+val_fit <- lm(valrat_z ~ out_nfr + out_fres + bv_fres, trials_aff)
+summary(val_fit)
+
+```
+
+```{r}
+stay_fit <- lmer(stay ~ out_nfr + out_fres + bv_fres + (1|id),trials_aff)
+summary(stay_fit)
+```
+The relative effects of out_nfres and out_fres are about the same here as in the SONA data: nofres has about twice the effect on affect, and half the effect on learning. 
+However, box values have a much smaller effect on affect and choices - on the order of 2x as small. Dissapointing. 
+Any other issues with the data? Well, it generally seems to be low quality - I had to throw out about as many subjects for QC as I did with the SONA data. Maybe paying subjects more will help that. A little longer breaks seems like a good idea too. Finally, it's worth considering making the outcomes non-random, so that subjects have more motivation learn and choose well. You could do drifitng probabilities for two outcomes (getting rid of the 0 outcome)
+
+We don't appear to have issues with believability, or with nofres box values creating too much noise in learning. Nor do we appear to have an issue of excessive focus on box values meaning subjects don't try to choose well. 
+We do appear to have an issue with data quality, and also with the general effect of BVs on affect. To solve the latter issue, let's try going all out with the BV-fres ratio - the largest believable value of BVs and the smallest values of fres that may be motivationally relevant. Probably these values would be 3 dollars and 5 cents. However, I prefer 2 dollars and 5 cents, because it just feels more belivable and reasonable to me (esp. with the $6 max bonus payment we're switching to), and because at this scale 2 vs. 3 bucks isn't going to make a meaningful difference.
+
+```{r}
+low_bv <- filter(sub,bv_b < -.02)
+medsplit <- trials_aff %>% filter(id %in% low_bv$id)
+stay_medsplit <- lmer(stay ~ out_nfr + out_fres + bv_fres + (1|id),medsplit)
+summary(stay_medsplit)
+```
+```{r}
+stay_val_fit <- lmer(stay ~ out_nfr + out_fres + valrat_fres + valrat_nofres + (1|id),trials_aff)
+summary(stay_val_fit)
+```
+

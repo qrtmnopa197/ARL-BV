@@ -1,0 +1,73 @@
+---
+title: "data_review_4_17"
+author: "Daniel P"
+date: '2023-04-17'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+path_to_project_directory <- "~/projects/ARL_bv/"
+path_to_arl <- "~/projects/ARL/"
+path_to_s22 <- "~/projects/spring_2022_study/"
+
+source(paste0(path_to_s22,"code/functions/s22_utilities.R")) #get s22 functions
+source(paste0(path_to_arl,"code/functions/arl_utilities.R")) 
+library(tidyverse)
+library(lme4)
+library(MuMIn)
+```
+
+```{r}
+exclude_subs <- c(87319,79948)
+sub <- read.csv(paste0(path_to_project_directory,"analysis_data/sub_level_data_all_subs_2023-04-18_08_39_03.csv")) %>% filter(.,!(id %in% exclude_subs))
+
+tl_data <- read.csv(paste0(path_to_project_directory,"analysis_data/trial_level_data_all_subs_2023-04-18_08_39_03.csv")) %>% filter(.,!(id %in% exclude_subs))
+```
+
+
+```{r}
+dr_vars <- c("valreg_rsq","bv_b","fres_b","fres_bv_ratio","percent_left_b1","percent_left_b2","percent_left_b3")
+plot_sub_level_vars(sub,dr_vars,path_to_project_directory,type="dr") #create and save plot grids
+```
+
+```{r}
+sub$age <- as.numeric(sub$age)
+age_no_skips <- filter(sub,age < 900)
+plot_hist(age_no_skips,"age") 
+```
+
+```{r}
+sum(sub$gender=="Male")
+```
+
+```{r}
+sum(sub$gender=="Female")
+```
+
+```{r}
+sum(sub$gender=="Non-binary")
+```
+
+```{r}
+trials_nl <- filter(tl_data,choice != "late")
+trials_percent_plots <- trials_nl
+trials_percent_plots <- trials_percent_plots %>% rename (pair_pres_num = trial)
+percentage_plots(trials_percent_plots,"stay")
+```
+
+```{r}
+trials_aff <- filter(tl_data,!is.na(val_rat) & show_fres == 1)
+val_fit <- lmer(valrat_z ~ out + block_val + (out + block_val|id), trials_aff)
+summary(val_fit)
+r.squaredGLMM(val_fit)
+```
+
+```{r}
+cor(trials_aff$out,trials_aff$valrat_z)
+cor(trials_aff$block_val,trials_aff$valrat_z)
+medsplit <- trials_aff %>% filter(id %in% c(89692,87664,87565,88228,90166))
+cor(medsplit$out,medsplit$valrat_z)
+cor(medsplit$block_val,medsplit$valrat_z)
+```
+
