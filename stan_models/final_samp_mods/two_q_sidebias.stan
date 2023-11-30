@@ -119,6 +119,8 @@ transformed parameters {
   {//anonymous_scope_start
     array[n_s,n_t] vector[n_f] Q_fr; //Q-value for trials where fractal result is received
     array[n_s,n_t] vector[n_f] Q_nf; //Q-value for trials where fractal result is not received
+    array[n_s,n_t] vector[n_f] A_fr; 
+    array[n_s,n_t] vector[n_f] A_nf; 
     array[n_s,n_t] vector[n_f] C; // Choice autocorrelation value
     real choice_a; // 1 if fractal A was chosen, 0 otherwise - used for C update
     real choice_b; // 1 if fractal B was chosen, 0 otherwise - used for C update
@@ -132,14 +134,14 @@ transformed parameters {
     vector[n_s] aff_fr_sens = aff_fr_sens_mu + aff_fr_sens_sigma*aff_fr_sens_z;
     vector[n_s] aff_nf_sens = aff_nf_sens_mu + aff_nf_sens_sigma*aff_nf_sens_z;
     
+    vector[n_s] ls_bias = ls_bias_mu + ls_bias_sigma*ls_bias_z;
+    
     vector[n_s] dcy_fr = inv_logit(dcy_fr_mu + dcy_fr_sigma*dcy_fr_z);
     vector[n_s] dcy_nf = inv_logit(dcy_nf_mu + dcy_nf_sigma*dcy_nf_z);
 
     vector[n_s] lrn_fr = inv_logit(lrn_fr_mu + lrn_fr_sigma*lrn_fr_z);
     vector[n_s] lrn_nf = inv_logit(lrn_nf_mu + lrn_nf_sigma*lrn_nf_z);
     vector[n_s] lrn_c = inv_logit(lrn_c_mu + lrn_c_sigma*lrn_c_z);
-    
-    vector[n_s] ls_bias = ls_bias_mu + ls_bias_sigma*ls_bias_z;
     
     vector[n_s] B_0 = B_0_mu + B_0_sigma*B_0_z;
     vector[n_s] B_rew_fr = B_rew_fr_mu + B_rew_fr_sigma*B_rew_fr_z;
@@ -159,10 +161,15 @@ transformed parameters {
           // for the first trial of each subject, set all Q/C values to 0
           Q_fr[s,t] = rep_vector(0,n_f); 
           Q_nf[s,t] = rep_vector(0,n_f); 
+          A_fr[s,t] = rep_vector(0,n_f); 
+          A_nf[s,t] = rep_vector(0,n_f); 
           C[s,t] = rep_vector(0,n_f);
         }
         
-        softmax_arg = Q_fr[s,t,{fA[s,t],fB[s,t]}] + Q_nf[s,t,{fA[s,t],fB[s,t]}] + C[s,t,{fA[s,t],fB[s,t]}] + [ls_bias[s],0]'; //set argument for softmax decision function
+        softmax_arg = rew_fr_sens[s]*Q_fr[s,t,{fA[s,t],fB[s,t]}] + rew_nf_sens[s]*Q_nf[s,t,{fA[s,t],fB[s,t]}] +
+                      aff_fr_sens[s]*A_fr[s,t,{fA[s,t],fB[s,t]}] + aff_nf_sens[s]*A_nf[s,t,{fA[s,t],fB[s,t]}] +
+                      csens[s]*C[s,t,{fA[s,t],fB[s,t]}] + [ls_bias[s],0]'; //set argument for softmax decision function
+                      
         choice_lik[(s-1)*n_t+t] = categorical_logit_lpmf(choice[s,t] | softmax_arg); //get the likelihood of the choice on this trial
         
         //Generate valence rating prediction
@@ -188,6 +195,8 @@ transformed parameters {
           //decay Q values toward 0
           Q_fr[s,t+1] = (1-dcy_fr[s])*Q_fr[s,t];
           Q_nf[s,t+1] = (1-dcy_nf[s])*Q_nf[s,t];
+          A_fr[s,t+1] = (1-dcy_fr[s])*A_fr[s,t];
+          A_nf[s,t+1] = (1-dcy_nf[s])*A_nf[s,t];
           if(choice[s,t] == 1){
             // if fA was chosen...
             //update C using 1 for choice a and 0 for choice b
@@ -196,10 +205,12 @@ transformed parameters {
             // if the outcome was the fractal result...
             if(fres[s,t] == 1){
               //update Q_fr...
-              Q_fr[s,t+1,fA[s,t]] = Q_fr[s,t,fA[s,t]] + lrn_fr[s]*(rew_fr_sens[s]*rew[s,t] + aff_fr_sens[s]*affect - Q_fr[s,t,fA[s,t]]);
+              Q_fr[s,t+1,fA[s,t]] = Q_fr[s,t,fA[s,t]] + lrn_fr[s]*(rew[s,t] - Q_fr[s,t,fA[s,t]]);
+              A_fr[s,t+1,fA[s,t]] = A_fr[s,t,fA[s,t]] + lrn_fr[s]*(affect - A_fr[s,t,fA[s,t]]);
             } else if(fres[s,t] == 0){
               //otherwise update Q_nf
-              Q_nf[s,t+1,fA[s,t]] = Q_nf[s,t,fA[s,t]] + lrn_nf[s]*(rew_nf_sens[s]*rew[s,t] + aff_nf_sens[s]*affect - Q_nf[s,t,fA[s,t]]);
+              Q_nf[s,t+1,fA[s,t]] = Q_nf[s,t,fA[s,t]] + lrn_nf[s]*(rew[s,t] - Q_nf[s,t,fA[s,t]]);
+              A_nf[s,t+1,fA[s,t]] = A_nf[s,t,fA[s,t]] + lrn_nf[s]*(affect - A_nf[s,t,fA[s,t]]);
             }
           } else if(choice[s,t] == 2){
             // vice-versa if fB was chosen...
@@ -208,16 +219,18 @@ transformed parameters {
             // if the outcome was the fractal result...
             if(fres[s,t] == 1){
               //update Q_fr...
-              Q_fr[s,t+1,fB[s,t]] = Q_fr[s,t,fB[s,t]] + lrn_fr[s]*(rew_fr_sens[s]*rew[s,t] + aff_fr_sens[s]*affect - Q_fr[s,t,fB[s,t]]);
+              Q_fr[s,t+1,fB[s,t]] = Q_fr[s,t,fB[s,t]] + lrn_fr[s]*(rew[s,t] - Q_fr[s,t,fB[s,t]]);
+              A_fr[s,t+1,fB[s,t]] = A_fr[s,t,fB[s,t]] + lrn_fr[s]*(affect - A_fr[s,t,fB[s,t]]);
             } else if(fres[s,t] == 0){
               //otherwise update Q_nf
-              Q_nf[s,t+1,fB[s,t]] = Q_nf[s,t,fB[s,t]] + lrn_nf[s]*(rew_nf_sens[s]*rew[s,t] + aff_nf_sens[s]*affect - Q_nf[s,t,fB[s,t]]);
+              Q_nf[s,t+1,fB[s,t]] = Q_nf[s,t,fB[s,t]] + lrn_nf[s]*(rew[s,t] - Q_nf[s,t,fB[s,t]]);
+              A_nf[s,t+1,fB[s,t]] = A_nf[s,t,fB[s,t]] + lrn_nf[s]*(affect - A_nf[s,t,fB[s,t]]);
             }
           }
           //update C
           C[s,t+1] = C[s,t]; // Initialize the next trial's C values to be the same as the current trial's (no forgetting)
-          C[s,t+1,fA[s,t]] = C[s,t,fA[s,t]] + lrn_c[s]*(csens[s]*choice_a - C[s,t,fA[s,t]]); // update C value of fA with 1 if fA was chosen and 0 if it wasn't.
-          C[s,t+1,fB[s,t]] = C[s,t,fB[s,t]] + lrn_c[s]*(csens[s]*choice_b - C[s,t,fB[s,t]]); // ditto fB
+          C[s,t+1,fA[s,t]] = C[s,t,fA[s,t]] + lrn_c[s]*(choice_a - C[s,t,fA[s,t]]); // update C value of fA with 1 if fA was chosen and 0 if it wasn't.
+          C[s,t+1,fB[s,t]] = C[s,t,fB[s,t]] + lrn_c[s]*(choice_b - C[s,t,fB[s,t]]); // ditto fB
         }
       }
     }
@@ -265,6 +278,7 @@ model{
   B_auto_mu ~ normal(0,1.5);
   B_auto_sigma ~ normal(0,2);
   
+  
   //participant z-scores
   rew_fr_sens_z ~ std_normal();
   rew_nf_sens_z ~ std_normal();
@@ -282,7 +296,7 @@ model{
   B_bv_fr_z ~ std_normal();
   B_auto_z ~ std_normal();
   ls_bias_z ~ std_normal();
-  
+
   resid_sigma ~ normal(0,2);
   
   target += choice_lik; //increment target likelihood with the likelihoods of choices under the model

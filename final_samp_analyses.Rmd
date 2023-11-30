@@ -28,8 +28,8 @@ library(cmdstanr)
 library(loo)
 library(bayesplot)
 
-trials <- read.csv(paste0(path_to_project_directory,"analysis_data/trial_level_data_all_subs_2023-10-17_19_06_02.592573.csv"))
-subs <- read.csv(paste0(path_to_project_directory,"analysis_data/sub_level_data_all_subs_2023-10-17_19_06_02.592573.csv"))
+trials <- read.csv(paste0(path_to_project_directory,"analysis_data/trial_level_data_all_subs_2023-11-27_18_52_39.243708.csv"))
+subs <- read.csv(paste0(path_to_project_directory,"analysis_data/sub_level_data_all_subs_2023-11-27_18_52_39.243708.csv"))
 ```
 
 Run through QC
@@ -106,7 +106,7 @@ sum(subs$gender=="Non-binary")
 ```
 
 ```{r}
-trials$pair_pres_num <- rep(c(1:48),65*3)
+trials$pair_pres_num <- rep(c(1:48),323*3)
 percentage_plots(trials,"stay")
 ```
 
@@ -143,13 +143,31 @@ Compare
 ```{r}
 fsml_compare(one_q,two_q)
 ```
+looks like two_q fits better
+
+Checking...
+```{r}
+lfsm_draws <- two_q_fit$draws(c("lrn_fr_mu","lrn_nf_mu","dcy_fr_mu","dcy_nf_mu"))
+test <- sigmoid(two_q_fit$draws("lrn_fr_mu")) - sigmoid(two_q_fit$draws("lrn_nf_mu"))
+mcmc_areas(
+  lfsm_draws,
+  area_method = "scaled height",
+  prob = 0.5,
+  prob_outer = .95, 
+  point_est = "median"
+)
+
+median(cfsm_draws,probs=c(.05,.95))
+```
+Indeed, the learning rate is higher for fres than no-fres trials, as predicted.
 
 Fit winner with side bias
 ```{r}
-_q_sidebias <- fit_stan_model(stan_file=paste0(stan_model_dir,"_q_sidebias.stan"),
+two_q_sidebias <- fit_stan_model(stan_file=paste0(stan_model_dir,"two_q_sidebias.stan"),
                                    model_out_dir=model_out_dir,
                                    raw_data=trials,
                                    study = "arlbv",
+                                   chains = 3,
                                    n_t = 144)
 ```
 
@@ -174,7 +192,7 @@ mcmc_areas(
   afsm_draws,
   area_method = "scaled height",
   prob = 0.5,
-  prob_outer = 0.9, 
+  prob_outer = .9, 
   point_est = "median"
 )
 ```
@@ -206,6 +224,7 @@ mcmc_areas(
 # Other model parameters
 
 ```{r}
-
+two_q <- read_fsml("two_q",model_out_dir=model_out_dir)
+view(two_q$sum)
 ```
 

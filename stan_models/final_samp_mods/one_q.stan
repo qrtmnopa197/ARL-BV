@@ -57,9 +57,9 @@ parameters{
   //Learning rates for Q-values and autocorrelation value C
   
   //for trials where fractal result was shown
-  real lrn_q_mu;
-  real<lower=0> lrn_q_sigma;
-  vector[n_s] lrn_q_z;
+  real lrn_qa_mu;
+  real<lower=0> lrn_qa_sigma;
+  vector[n_s] lrn_qa_z;
   
   //for autocorrelation
   real lrn_c_mu;
@@ -101,6 +101,7 @@ transformed parameters {
   vector[n_rat] rat_pred; //the predicted valence rating on each trial
   {//anonymous_scope_start
     array[n_s,n_t] vector[n_f] Q; //Q-value for trials where fractal result is received
+    array[n_s,n_t] vector[n_f] A;
     array[n_s,n_t] vector[n_f] C; // Choice autocorrelation value
     real choice_a; // 1 if fractal A was chosen, 0 otherwise - used for C update
     real choice_b; // 1 if fractal B was chosen, 0 otherwise - used for C update
@@ -116,7 +117,7 @@ transformed parameters {
     
     vector[n_s] dcy = inv_logit(dcy_mu + dcy_sigma*dcy_z);
 
-    vector[n_s] lrn_q = inv_logit(lrn_q_mu + lrn_q_sigma*lrn_q_z);
+    vector[n_s] lrn_qa = inv_logit(lrn_qa_mu + lrn_qa_sigma*lrn_qa_z);
     vector[n_s] lrn_c = inv_logit(lrn_c_mu + lrn_c_sigma*lrn_c_z);
     
     vector[n_s] B_0 = B_0_mu + B_0_sigma*B_0_z;
@@ -136,10 +137,11 @@ transformed parameters {
         if(t == 1){
           // for the first trial of each subject, set all Q/C values to 0
           Q[s,t] = rep_vector(0,n_f); 
+          A[s,t] = rep_vector(0,n_f); 
           C[s,t] = rep_vector(0,n_f);
         }
         
-        softmax_arg = Q[s,t,{fA[s,t],fB[s,t]}] + C[s,t,{fA[s,t],fB[s,t]}]; //set argument for softmax decision function
+        softmax_arg = Q[s,t,{fA[s,t],fB[s,t]}] + A[s,t,{fA[s,t],fB[s,t]}] + C[s,t,{fA[s,t],fB[s,t]}]; //set argument for softmax decision function
         choice_lik[(s-1)*n_t+t] = categorical_logit_lpmf(choice[s,t] | softmax_arg); //get the likelihood of the choice on this trial
         
         //Generate valence rating prediction
@@ -164,6 +166,7 @@ transformed parameters {
         if(t < n_t){
           //decay Q values toward 0
           Q[s,t+1] = (1-dcy[s])*Q[s,t];
+          A[s,t+1] = (1-dcy[s])*A[s,t];
           if(choice[s,t] == 1){
             // if fA was chosen...
             //update C using 1 for choice a and 0 for choice b
@@ -171,9 +174,11 @@ transformed parameters {
             choice_b = 0;
             // if the outcome was the fractal result...
             if(fres[s,t] == 1){
-              Q[s,t+1,fA[s,t]] = Q[s,t,fA[s,t]] + lrn_q[s]*(rew_fr_sens[s]*rew[s,t] + aff_fr_sens[s]*affect - Q[s,t,fA[s,t]]);
+              Q[s,t+1,fA[s,t]] = Q[s,t,fA[s,t]] + lrn_qa[s]*(rew_fr_sens[s]*rew[s,t] - Q[s,t,fA[s,t]]);
+              A[s,t+1,fA[s,t]] = A[s,t,fA[s,t]] + lrn_qa[s]*(aff_fr_sens[s]*affect - A[s,t,fA[s,t]]);
             } else if(fres[s,t] == 0){
-              Q[s,t+1,fA[s,t]] = Q[s,t,fA[s,t]] + lrn_q[s]*(rew_nf_sens[s]*rew[s,t] + aff_nf_sens[s]*affect - Q[s,t,fA[s,t]]);
+              Q[s,t+1,fA[s,t]] = Q[s,t,fA[s,t]] + lrn_qa[s]*(rew_nf_sens[s]*rew[s,t] - Q[s,t,fA[s,t]]);
+              A[s,t+1,fA[s,t]] = A[s,t,fA[s,t]] + lrn_qa[s]*(aff_nf_sens[s]*affect - A[s,t,fA[s,t]]);
             }
           } else if(choice[s,t] == 2){
             // vice-versa if fB was chosen...
@@ -182,10 +187,12 @@ transformed parameters {
             // if the outcome was the fractal result...
             if(fres[s,t] == 1){
               //update Q_fr...
-              Q[s,t+1,fB[s,t]] = Q[s,t,fB[s,t]] + lrn_q[s]*(rew_fr_sens[s]*rew[s,t] + aff_fr_sens[s]*affect - Q[s,t,fB[s,t]]);
+              Q[s,t+1,fB[s,t]] = Q[s,t,fB[s,t]] + lrn_qa[s]*(rew_fr_sens[s]*rew[s,t] - Q[s,t,fB[s,t]]);
+              A[s,t+1,fB[s,t]] = A[s,t,fB[s,t]] + lrn_qa[s]*(aff_fr_sens[s]*affect - A[s,t,fB[s,t]]);
             } else if(fres[s,t] == 0){
               //otherwise update Q_nf
-              Q[s,t+1,fB[s,t]] = Q[s,t,fB[s,t]] + lrn_q[s]*(rew_nf_sens[s]*rew[s,t] + aff_nf_sens[s]*affect - Q[s,t,fB[s,t]]);
+              Q[s,t+1,fB[s,t]] = Q[s,t,fB[s,t]] + lrn_qa[s]*(rew_nf_sens[s]*rew[s,t] - Q[s,t,fB[s,t]]);
+              A[s,t+1,fB[s,t]] = A[s,t,fB[s,t]] + lrn_qa[s]*(aff_nf_sens[s]*affect - A[s,t,fB[s,t]]);
             }
           }
           //update C
@@ -215,8 +222,8 @@ model{
   //learning and decay rates
   dcy_mu ~ normal(-.05,1.7);
   dcy_sigma ~ normal(0,4);
-  lrn_q_mu ~ normal(-.05,1.7);
-  lrn_q_sigma ~ normal(0,4);
+  lrn_qa_mu ~ normal(-.05,1.7);
+  lrn_qa_sigma ~ normal(0,4);
   lrn_c_mu ~ normal(-.05,1.7);
   lrn_c_sigma ~ normal(0,4);
   
@@ -239,7 +246,7 @@ model{
   aff_nf_sens_z ~ std_normal();
   csens_z ~ std_normal();
   dcy_z ~ std_normal();
-  lrn_q_z ~ std_normal();
+  lrn_qa_z ~ std_normal();
   lrn_c_z ~ std_normal();
   B_0_z ~ std_normal();
   B_rew_fr_z ~ std_normal();
