@@ -1,3 +1,43 @@
+#accepts a subject-level trials df, and returns the same df with columns for the differences between the past 
+#valence/reward/etc. values of the chosen and unchosen fractal
+sub_past_diffs <- function(s_trials,columns=c("valrat_z","out"),past_trials=3){
+  #initialize the columns being added
+  new_cols <- c()
+  for (col in columns) {
+    for (trial in 1:past_trials) {
+      new_cols <- c(new_cols, paste0(col,"_diff_",trial))
+    }
+  }
+  s_trials[new_cols] <- NA
+  
+  for(t in 1:nrow(s_trials)){
+    #get values for chosen and unchosen fractals
+    past_chosen <- past_diffs(df=s_trials,frac_ix = s_trials[t,"chosen_frac"],columns,t,past_trials)
+    past_unchosen <- past_diffs(df=s_trials,frac_ix = s_trials[t,"unchosen_frac"],columns,t,past_trials)
+      
+    s_trials[t,new_cols] <- past_chosen-past_unchosen #assign to the current trial
+  }
+  
+  return(s_trials)
+}
+
+#Gets a vector of past values for given columns
+past_diffs <- function(df,frac_ix, columns, t, past_trials){
+  fres_df <- df %>% filter(show_fres == 1 & chosen_frac == frac_ix & trial <= t) 
+  past_vals <- fres_df[columns]
+  
+  #if fewer than past_trials columns in this df, add rows with 0 in them
+  if(nrow(past_vals) < past_trials){
+    num_zero_rows <- past_trials - nrow(past_vals)
+    zero_df <- data.frame(matrix(0,nrow=num_zero_rows,length(columns)))
+    names(zero_df) <- columns
+    past_vals <- rbind(zero_df,past_vals)
+  }
+  tail_past_vals <- tail(past_vals,past_trials)
+  tpv_ordered <- tail_past_vals[past_trials:1, ]
+  return(unlist(tpv_ordered)) #just get the values from the last three trials
+}
+
 #Creates a list of Prolific submissions to be approved/rejected based on attention checks
 #sub: path to a subject-level CSV with columns for id and att_checks_passed
 #date_min/max: the earliest/latest date from which to review participants. By default, every participant in the sub CSV is included.
@@ -55,16 +95,14 @@ stan_data_arlbv <- function(trials,n_t){
   frac_vec <- as.vector(as.matrix(trials[c("fA_img","fB_img")])) #get a big vector of fractals...
   n_f <- length(unique(frac_vec)) #and then get the number of fractals
   
-  #Create indices from 1:n_f for each fractal image. To do this, first create a mini-df with one column having all the fA_img values and the other two
-  #columns having indices for fA and fB. This assumes that every fA_img is paired with a unique fB_img.
-  f_index_df <- data.frame(fA_img = unique(trials$fA_img),fA_ix = 1:length(unique(trials$fA_img)),fB_ix = (1:length(unique(trials$fA_img))+length(unique(trials$fA_img))))
-  trials <- left_join(trials,f_index_df,by="fA_img")
-  
-  #Get matrics with subjects on the rows and trials in the columns, containing indices for fractal A/B
+  #Get matrices with subjects on the rows and trials in the columns, containing indices for fractal A/B
   fA <- sub_by_trial_matrix(trials,"fA_ix")   
   fB <- sub_by_trial_matrix(trials,"fB_ix")
   
   choice <- sub_by_trial_matrix(trials,"choice_numeric") #ditto whether fractal A (1) or B(2) was chosen  
+  
+  chosen_frac <- sub_by_trial_matrix(trials,"chosen_frac")
+  unchosen_frac <- sub_by_trial_matrix(trials,"unchosen_frac")
 
   rew <- sub_by_trial_vec_list(trials,"out") #get a list of vectors, one per subject, each containing the reward for each trial
   bv <- sub_by_trial_vec_list(trials,"box_val")
@@ -92,6 +130,8 @@ stan_data_arlbv <- function(trials,n_t){
     fB = fB,
     rew = rew,
     choice = choice,
+    chosen_frac = chosen_frac,
+    unchosen_frac = unchosen_frac,
     bv = bv,
     fres = fres,
     rat = rat,

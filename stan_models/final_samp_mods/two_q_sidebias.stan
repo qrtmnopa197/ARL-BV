@@ -304,9 +304,7 @@ model{
 }
 generated quantities{
   vector[n_rat] affect_lik; //log likelihoods of all affect rating
-  vector[n_s*n_t+n_rat] log_lik; //log likelihoods of all choices followed by log likelihoods of all affect ratings
   for(i in 1:n_rat){
     affect_lik[i] = normal_lpdf(rat[i] | rat_pred[i], resid_sigma);
   }
-  log_lik = append_row(choice_lik,affect_lik);
 }

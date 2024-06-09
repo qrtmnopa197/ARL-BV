@@ -7,7 +7,7 @@ output: html_document
 Set up
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
-options(mc.cores=6)
+options(mc.cores=12)
 
 path_to_project_directory <- "~/projects/ARL_bv/"
 path_to_arl <- "~/projects/ARL/"
@@ -27,13 +27,15 @@ library(tidyverse)
 library(cmdstanr)
 library(loo)
 library(bayesplot)
-
-trials <- read.csv(paste0(path_to_project_directory,"analysis_data/trial_level_data_all_subs_2023-11-27_18_52_39.243708.csv"))
-subs <- read.csv(paste0(path_to_project_directory,"analysis_data/sub_level_data_all_subs_2023-11-27_18_52_39.243708.csv"))
+library(tidybayes)
+library(lme4)
 ```
 
-Run through QC
+Read in data, run through QC
 ```{r}
+trials <- read.csv(paste0(path_to_project_directory,"analysis_data/trial_level_data_all_subs_2023-11-27_18_52_39.243708.csv"))
+subs <- read.csv(paste0(path_to_project_directory,"analysis_data/sub_level_data_all_subs_2023-11-27_18_52_39.243708.csv"))
+
 sub_hard_fail <- subs %>% filter(att_checks_passed < 5 |
                                  valrat_skipped_percent > .1 |
                                  late_percent > .2 |
@@ -78,6 +80,15 @@ trials <- add_probe_number(trials,newcol="rat_number",val_col="valrat_z") #add r
 #add a column with completed trial numbers - the trial indices if you ignore late trials. These will match the "t" trial numbers used in the Stan models
 trials <- do.call(rbind,by(trials,trials$sub_index,add_trials_nl))
 trials$overall_trial_nl <- 1:nrow(trials) #get the overall trial number ignoring late trials and collapsing across subjects
+
+#Create indices from 1:n_f for each fractal image. To do this, first create a mini-df with one column having all the fA_img values and the other two
+#columns having indices for fA and fB. This assumes that every fA_img is paired with a unique fB_img.
+f_index_df <- data.frame(fA_img = unique(trials$fA_img),fA_ix = 1:length(unique(trials$fA_img)),fB_ix = (1:length(unique(trials$fA_img))+length(unique(trials$fA_img))))
+trials <- left_join(trials,f_index_df,by="fA_img")
+
+#get the chosen fractal index
+trials <- trials %>% mutate(chosen_frac = ifelse(choice == "fA",fA_ix,fB_ix))
+trials <- trials %>% mutate(unchosen_frac = ifelse(choice == "fA",fB_ix,fA_ix))
 ```
 
 Some additional data review
@@ -106,6 +117,12 @@ sum(subs$gender=="Non-binary")
 ```
 
 ```{r}
+sub_age <- subs %>% filter(age < 80)
+mean(sub_age$age)
+sd(sub_age$age)
+```
+
+```{r}
 trials$pair_pres_num <- rep(c(1:48),323*3)
 percentage_plots(trials,"stay")
 ```
@@ -123,32 +140,29 @@ two_q <- fit_stan_model(stan_file=paste0(stan_model_dir,"two_q.stan"),
                                    model_out_dir=model_out_dir,
                                    raw_data=trials,
                                    study = "arlbv",
-                                   n_t = 144)
+                                   n_t = 144,
+                                   iter_sampling = 5000)
 ```
 
 Check diagnostics
 ```{r}
 one_q$diagnostics
-one_q$diagnostics$Rhat %>% filter(sd != 0)
-one_q$diagnostics$ESS %>% filter(sd != 0)
 ```
 
 ```{r}
 two_q$diagnostics
-two_q$diagnostics$Rhat %>% filter(sd != 0)
-two_q$diagnostics$ESS %>% filter(sd != 0)
 ```
+Ok
 
 Compare
 ```{r}
 fsml_compare(one_q,two_q)
 ```
-looks like two_q fits better
+Looks like two_q fits better
 
-Checking...
+Does this show up in the learning and forgetting rates?
 ```{r}
-lfsm_draws <- two_q_fit$draws(c("lrn_fr_mu","lrn_nf_mu","dcy_fr_mu","dcy_nf_mu"))
-test <- sigmoid(two_q_fit$draws("lrn_fr_mu")) - sigmoid(two_q_fit$draws("lrn_nf_mu"))
+twoq_lrn_dc_draws <- get_draws("two_q",model_out_dir=model_out_dir,vars=c("lrn_fr_mu","lrn_nf_mu","dcy_fr_mu","dcy_nf_mu"))
 mcmc_areas(
   lfsm_draws,
   area_method = "scaled height",
@@ -156,9 +170,14 @@ mcmc_areas(
   prob_outer = .95, 
   point_est = "median"
 )
-
-median(cfsm_draws,probs=c(.05,.95))
 ```
+
+```{r}
+sigmoid(filt_sum(two_q$sum,"lrn_fr_mu")$median)
+sigmoid(filt_sum(two_q$sum,"lrn_nf_mu")$median)
+(sigmoid(twoq_lrn_dc_draws[,,"lrn_fr_mu"]) - sigmoid(twoq_lrn_dc_draws[,,"lrn_nf_mu"])) > 0
+```
+
 Indeed, the learning rate is higher for fres than no-fres trials, as predicted.
 
 Fit winner with side bias
@@ -171,60 +190,234 @@ two_q_sidebias <- fit_stan_model(stan_file=paste0(stan_model_dir,"two_q_sidebias
                                    n_t = 144)
 ```
 
-Check diagnostics
-```{r}
-_q_sidebias$diagnostics
-_q_sidebias$diagnostics$Rhat %>% filter(sd != 0)
-_q_sidebias$diagnostics$ESS %>% filter(sd != 0)
-```
-
 Compare
 ```{r}
-fsml_compare(_q,_q_sidebias)
+fsml_compare(two_q,two_q_sidebias)
 ```
+Not clearly better. Stick with two_q
 
 # Hypothesis tests
 
 Posterior for effect of affect on choice
 ```{r}
-afsm_draws <- $fit$draws("aff_fr_sens_mu")
+twoq_int_draws <- get_draws("two_q",model_out_dir=model_out_dir,vars=c("aff_fr_sens_mu","rew_fr_sens_mu","B_rew_fr_mu","B_rew_nf_mu","B_bv_fr_mu","B_auto_mu"))
+
 mcmc_areas(
-  afsm_draws,
+  twoq_int_draws,
+  pars = "aff_fr_sens_mu",
   area_method = "scaled height",
-  prob = 0.5,
-  prob_outer = .9, 
+  prob = 0.9,
+  prob_outer = .99, 
   point_est = "median"
 )
 ```
 
 Posterior for effect of reward on choice
 ```{r}
-rfsm_draws <- $fit$draws("rew_fr_sens_mu")
 mcmc_areas(
-  rfsm_draws,
+  twoq_int_draws,
+  pars = "rew_fr_sens_mu",
   area_method = "scaled height",
-  prob = 0.5,
-  prob_outer = 0.9, 
+  prob = 0.9,
+  prob_outer = .99, 
   point_est = "median"
 )
 ```
 
-Posteriors for regression parameters
 ```{r}
-reg_draws <- $fit$draws(c("B_rew_fr_mu","B_rew_nf_mu","B_bv_fr_mu","B_auto_mu"))
-mcmc_areas(
-  reg_draws,
-  area_method = "scaled height",
-  prob = 0.5,
-  prob_outer = 0.95, 
-  point_est = "median"
-)
+two_q_scds <- get_draws("two_q",model_out_dir=model_out_dir,vars = c("scd_aff_fr_sens_mu","scd_rew_fr_sens_mu","scd_csens_mu"))
+quantile(two_q_scds[,,"scd_aff_fr_sens_mu"],c(.025,.5,.975))
+quantile(two_q_scds[,,"scd_rew_fr_sens_mu"],c(.025,.5,.975))
+quantile(two_q_scds[,,"scd_csens_mu"],c(.025,.5,.975))
 ```
 
 # Other model parameters
 
 ```{r}
 two_q <- read_fsml("two_q",model_out_dir=model_out_dir)
-view(two_q$sum)
+view(filt_sum(two_q$sum,"mu"))
 ```
 
+# Exploratory analyses
+
+Predict RL using model-predicted affect, and residual affect, with a fuller affect model
+```{r}
+mod_aff_resid <- fit_stan_model(stan_file=paste0(stan_model_dir,"mod_aff_resid.stan"),
+                                   model_out_dir=model_out_dir,
+                                   raw_data=trials,
+                                   study = "arlbv",
+                                   chains = 3,
+                                   n_t = 144)
+```
+
+```{r}
+mom_sens_draws <- get_draws("mod_aff_resid",model_out_dir=model_out_dir,vars=c("aff_fr_sens_mu","rew_fr_sens_mu","resid_fr_sens_mu"))
+mcmc_areas(
+  mom_sens_draws,
+  pars = "aff_fr_sens_mu",
+  area_method = "scaled height",
+  prob = 0.9,
+  prob_outer = .99, 
+  point_est = "median"
+)
+```
+
+Is this a stronger effect than what we had before?
+```{r}
+twoq_int_draws <- get_draws("two_q",model_out_dir=model_out_dir,vars=c("aff_fr_sens_mu"))
+
+m_vs_rat <- mom_sens_draws[,,"aff_fr_sens_mu"] - twoq_int_draws[,,"aff_fr_sens_mu"]
+quantile(m_vs_rat,probs=c(.01,.025,.05,.5,.95,.975,.99))
+
+m_vs_resid <- mom_sens_draws[,,"aff_fr_sens_mu"] - mom_sens_draws[,,"resid_fr_sens_mu"]
+quantile(m_vs_resid,probs=c(.01,.025,.05,.5,.95,.975,.99))
+```
+
+
+```{r}
+mcmc_areas(
+  mom_sens_draws,
+  pars = "rew_fr_sens_mu",
+  area_method = "scaled height",
+  prob = 0.9,
+  prob_outer = .99, 
+  point_est = "median"
+)
+```
+```{r}
+mcmc_areas(
+  mom_sens_draws,
+  pars = "resid_fr_sens_mu",
+  area_method = "scaled height",
+  prob = 0.9,
+  prob_outer = .99, 
+  point_est = "median"
+)
+```
+```{r}
+filt_sum(mod_aff_resid$sum,"mu")
+```
+
+calculate R squared for valence prediction from this
+```{r}
+```
+
+
+Momentum model
+```{r}
+mom_rat <- fit_stan_model(stan_file=paste0(stan_model_dir,"mom_rat.stan"),
+                                   model_out_dir=model_out_dir,
+                                   raw_data=trials,
+                                   study = "arlbv",
+                                   chains = 3,
+                                   n_t = 144)
+```
+
+```{r}
+mom_terms <- get_draws("mom_rat",model_out_dir=model_out_dir,vars=c("x_sens_mu","aff_fr_sens_mu","B_auto_mu"))
+mcmc_areas(
+  mom_terms,
+  pars = "x_sens_mu",
+  area_method = "scaled height",
+  prob = 0.9,
+  prob_outer = .99, 
+  point_est = "median"
+)
+total_mom <- mom_terms[,,"x_sens_mu"] + mom_terms[,,"aff_fr_sens_mu"]*mom_terms[,,"B_auto_mu"]
+mcmc_areas(
+  total_mom,
+  area_method = "scaled height",
+  prob = 0.9,
+  prob_outer = .99, 
+  point_est = "median"
+)
+```
+
+Breaking down effects of affect rating into trial-related, nuisance variation, and residual
+```{r}
+breakdown <- fit_stan_model(stan_file=paste0(stan_model_dir,"breakdown.stan"),
+                                   model_out_dir=model_out_dir,
+                                   raw_data=trials,
+                                   study = "arlbv",
+                                   n_t = 144,
+                                   iter_sampling = 6000)
+```
+
+```{r}
+filt_sum(breakdown$sum,"mu")
+filt_sum(mod_aff_resid$sum,"mu")
+```
+Looks like it was worthwhile to break the result down like this - it resulted in much stronger estimates for aff_fres and allowed nuisance to be what it is.
+```{r}
+fsml_compare(breakdown,mod_aff_resid)
+```
+
+```{r}
+breakdown_ma_sens <- get_draws("breakdown",vars=c("scd_ma_fr_sens_mu"))
+quantile(breakdown_ma_sens,probs=c(.025,.5,.975))
+breakdown_rew_sens <- get_draws("breakdown",vars=c("scd_rew_fr_sens_mu"))
+quantile(breakdown_rew_sens,probs=c(.025,.5,.975))
+quantile(breakdown_ma_sens - breakdown_rew_sens,probs=c(.025,.5,.975))
+mean(breakdown_ma_sens > breakdown_rew_sens)
+breakdown_resid_sens <- get_draws("breakdown",vars=c("scd_resid_fr_sens_mu"))
+quantile(breakdown_resid_sens,probs=c(.025,.5,.975))
+
+```
+
+
+
+```{r}
+temp_breakdown <- fit_stan_model(stan_file=paste0(stan_model_dir,"temp_breakdown.stan"),
+                                   model_out_dir=model_out_dir,
+                                   raw_data=trials,
+                                   study = "arlbv",
+                                   n_t = 144,
+                                   chains = 3)
+```
+
+# Regressing valence and reward onto choice
+
+
+```{r}
+trials_fres <- filter(trials,show_fres == 1)
+trials_fres_scale <- trials_fres %>% mutate(valrat_z=scale(valrat_z),out=scale(out))
+stay_fit <- lmer(stay ~ valrat_z + out + (valrat_z + out | sub_index),trials_fres_scale)
+summary(stay_fit)
+```
+
+```{r}
+# trials_diffs <- do.call(rbind,by(trials,trials$sub_index,sub_past_diffs))
+# 
+# diff_reg_fit_1 <- lmer(stay ~ valrat_z_diff_1 + out_diff_1 + (valrat_z_diff_1 + out_diff_1 | sub_index),trials_diffs)
+# diff_reg_fit_1 <- lm(stay ~ valrat_z_diff_1 + out_diff_1,trials_diffs)
+# 
+# summary(diff_reg_fit_1)
+# 
+# diff_reg_fit_3 <- lmer(stay ~ valrat_z_diff_1 + out_diff_1 + valrat_z_diff_2 + out_diff_2 + valrat_z_diff_3 + out_diff_3 + 
+#                               (valrat_z_diff_1 + out_diff_1 + valrat_z_diff_2 + out_diff_2 + valrat_z_diff_3 + out_diff_3 | sub_index),trials_diffs)
+# 
+# diff_reg_fit_3 <- lm(stay ~ valrat_z_diff_1 + out_diff_1 + valrat_z_diff_2 + out_diff_2 + valrat_z_diff_3 + out_diff_3,trials_diffs)
+# summary(diff_reg_fit_3)
+# 
+# summary(diff_reg_fit_3)
+```
+
+#Utility vs. reinforcement test
+
+```{r}
+two_q_pe <- fit_stan_model(stan_file=paste0(stan_model_dir,"two_q_pe.stan"),
+                                   model_out_dir=model_out_dir,
+                                   raw_data=trials,
+                                   study = "arlbv",
+                                   chains = 3,
+                                   n_t = 144)
+```
+
+```{r}
+two_q_pe_comp <- fit_stan_model(stan_file=paste0(stan_model_dir,"two_q_pe_comp.stan"),
+                                   model_out_dir=model_out_dir,
+                                   raw_data=trials,
+                                   study = "arlbv",
+                                   chains = 3,
+                                   n_t = 144)
+```
