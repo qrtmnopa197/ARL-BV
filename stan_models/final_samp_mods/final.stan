@@ -32,12 +32,12 @@ parameters{
   real<lower=0> rew_fr_sens_sigma; //population sd
   vector[n_s] rew_fr_sens_z; //z-scores for subjects within population
   
-  //effect of affect/valence rating - on trials where fractal result was received - on choice
+  //effect of model-predicted valence - on trials where fractal result was received - on choice
   real aff_fr_sens_mu; 
   real<lower=0> aff_fr_sens_sigma;
   vector[n_s] aff_fr_sens_z;
   
-  //effect of residual on choice
+  //effect of valence residual on choice - on trials where fractal result was received
   real resid_fr_sens_mu; 
   real<lower=0> resid_fr_sens_sigma;
   vector[n_s] resid_fr_sens_z;
@@ -47,12 +47,12 @@ parameters{
   real<lower=0> rew_nf_sens_sigma; //population sd
   vector[n_s] rew_nf_sens_z; //z-scores for subjects within population
   
-  //effect of affect - on trials where the fractal result was not received - on choice
+  //effect of model-predicted valence - on trials where fractal result was not received - on choice
   real aff_nf_sens_mu; 
   real<lower=0> aff_nf_sens_sigma;
   vector[n_s] aff_nf_sens_z;
   
-  //effect of residual on choice
+  //effect of residual on choice - on trials where fractal result was not received
   real resid_nf_sens_mu; 
   real<lower=0> resid_nf_sens_sigma;
   vector[n_s] resid_nf_sens_z;
@@ -114,7 +114,7 @@ parameters{
   vector[n_s] B_bv_fr_z;
   
   //effect of Q value
-  real B_q_fr_mu; 
+  real B_q_fr_mu;
   real<lower=0> B_q_fr_sigma;
   vector[n_s] B_q_fr_z;
   
@@ -147,23 +147,31 @@ transformed parameters {
   //SDs of expected values
   real Q_fr_sd;
   real Q_nf_sd;
-  real C_sd;
-  //because the effects of the following are fixed at 1, the SD is the standardized effect
   real A_fr_sd;
   real A_nf_sd;
   real R_fr_sd;
   real R_nf_sd;
-  real N_fr_sd;
-  real N_nf_sd;
+  real C_sd;
   
   {//anonymous_scope_start
+  
     array[n_s,n_t] vector[n_f] Q_fr; //Q-value for trials where fractal result is received
     array[n_s,n_t] vector[n_f] Q_nf; //Q-value for trials where fractal result is not received
-    array[n_s,n_t] vector[n_f] A_fr; 
+    array[n_s,n_t] vector[n_f] A_fr; //ditto A-value...
     array[n_s,n_t] vector[n_f] A_nf; 
-    array[n_s,n_t] vector[n_f] R_fr; 
+    array[n_s,n_t] vector[n_f] R_fr; //ditto R...
     array[n_s,n_t] vector[n_f] R_nf; 
     array[n_s,n_t] vector[n_f] C; // Choice autocorrelation value
+    
+    //differences between Q, A, and C values of fractal A and fractal B
+    matrix[n_s,n_t] Q_fr_diff;
+    matrix[n_s,n_t] Q_nf_diff;
+    matrix[n_s,n_t] A_fr_diff;
+    matrix[n_s,n_t] A_nf_diff;
+    matrix[n_s,n_t] R_fr_diff;
+    matrix[n_s,n_t] R_nf_diff;
+    matrix[n_s,n_t] C_diff;
+    
     real choice_a; // 1 if fractal A was chosen, 0 otherwise - used for C update
     real choice_b; // 1 if fractal B was chosen, 0 otherwise - used for C update
     
@@ -195,9 +203,8 @@ transformed parameters {
     vector[n_s] B_pwqd_nf = B_pwqd_nf_mu + B_pwqd_nf_sigma*B_pwqd_nf_z;
     vector[n_s] B_auto = B_auto_mu + B_auto_sigma*B_auto_z;
     
-    real affect; //the affect on the current trial. If a rating was made this is the valence rating.
-                 //If the rating was skipped it's the valence rating predicted by the regression model
-    real curr_pred; //the predicted valence rating for the current trial
+    real curr_pred; //the predicted valence for the current trial
+    real nuis; //the nuisance variation in valence for the current trial
     real resid; //affect residual on the current trial
     
 
@@ -205,7 +212,7 @@ transformed parameters {
     for (s in 1:n_s) {
       for (t in 1:n_t){
         if(t == 1){
-          // for the first trial of each subject, set all Q/C values to 0
+          // for the first trial of each subject, set all expected values to 0
           Q_fr[s,t] = rep_vector(0,n_f); 
           Q_nf[s,t] = rep_vector(0,n_f); 
           A_fr[s,t] = rep_vector(0,n_f); 
@@ -222,15 +229,24 @@ transformed parameters {
                       
         choice_lik[(s-1)*n_t+t] = categorical_logit_lpmf(choice[s,t] | softmax_arg); //get the likelihood of the choice on this trial
         
+        //get differences on this trial
+        Q_fr_diff[s,t] = Q_fr[s,t,fA[s,t]] - Q_fr[s,t,fB[s,t]];
+        Q_nf_diff[s,t] = Q_nf[s,t,fA[s,t]] - Q_nf[s,t,fB[s,t]];
+        A_fr_diff[s,t] = A_fr[s,t,fA[s,t]] - A_fr[s,t,fB[s,t]];
+        A_nf_diff[s,t] = A_nf[s,t,fA[s,t]] - A_nf[s,t,fB[s,t]];
+        R_fr_diff[s,t] = R_fr[s,t,fA[s,t]] - R_fr[s,t,fB[s,t]];
+        R_nf_diff[s,t] = R_nf[s,t,fA[s,t]] - R_nf[s,t,fB[s,t]];
+        C_diff[s,t] = C[s,t,fA[s,t]] - C[s,t,fB[s,t]];
+        
         //Generate valence rating prediction
         if(fres[s,t] == 1){
           //if the fractal result was received...
           curr_pred = B_0[s] + B_rew_fr[s]*rew[s,t] + B_bv_fr[s]*bv[s,t] + B_q_fr[s]*Q_fr[s,t,chosen_frac[s,t]] +
-                      B_pwqd_fr[s]*(Q_fr[s,t,chosen_frac[s,t]]*exp(choice_lik[(s-1)*n_t+t]) + Q_fr[s,t,unchosen_frac[s,t]]*(1-exp(choice_lik[(s-1)*n_t+t])))
-        }else if (fres[s,t] == 0){
+                      B_pwqd_fr[s]*(Q_fr[s,t,chosen_frac[s,t]]*exp(choice_lik[(s-1)*n_t+t]) + Q_fr[s,t,unchosen_frac[s,t]]*(1-exp(choice_lik[(s-1)*n_t+t])));
+        } else if (fres[s,t] == 0){
           //if not...
           curr_pred = B_0[s] + B_rew_nf[s]*rew[s,t] + B_q_nf[s]*Q_fr[s,t,chosen_frac[s,t]] + 
-                      B_pwqd_nf[s]*(Q_fr[s,t,chosen_frac[s,t]]*exp(choice_lik[(s-1)*n_t+t]) + Q_fr[s,t,unchosen_frac[s,t]]*(1-exp(choice_lik[(s-1)*n_t+t])))
+                      B_pwqd_nf[s]*(Q_fr[s,t,chosen_frac[s,t]]*exp(choice_lik[(s-1)*n_t+t]) + Q_fr[s,t,unchosen_frac[s,t]]*(1-exp(choice_lik[(s-1)*n_t+t])));
         }
         nuis = B_auto[s]*prev_rat[s,t];
         
@@ -259,12 +275,12 @@ transformed parameters {
             choice_b = 0;
             // if the outcome was the fractal result...
             if(fres[s,t] == 1){
-              //update Q_fr...
+              //update fr values...
               Q_fr[s,t+1,fA[s,t]] = Q_fr[s,t,fA[s,t]] + lrn_fr[s]*(rew[s,t] - Q_fr[s,t,fA[s,t]]);
               A_fr[s,t+1,fA[s,t]] = A_fr[s,t,fA[s,t]] + lrn_fr[s]*(curr_pred - A_fr[s,t,fA[s,t]]);
               R_fr[s,t+1,fA[s,t]] = R_fr[s,t,fA[s,t]] + lrn_fr[s]*(resid - R_fr[s,t,fA[s,t]]);
             } else if(fres[s,t] == 0){
-              //otherwise update Q_nf
+              //otherwise update nf values...
               Q_nf[s,t+1,fA[s,t]] = Q_nf[s,t,fA[s,t]] + lrn_nf[s]*(rew[s,t] - Q_nf[s,t,fA[s,t]]);
               A_nf[s,t+1,fA[s,t]] = A_nf[s,t,fA[s,t]] + lrn_nf[s]*(curr_pred - A_nf[s,t,fA[s,t]]);
               R_nf[s,t+1,fA[s,t]] = R_nf[s,t,fA[s,t]] + lrn_nf[s]*(resid - R_nf[s,t,fA[s,t]]);
@@ -293,6 +309,13 @@ transformed parameters {
         }
       }
     }
+    Q_fr_sd = sd(Q_fr_diff);
+    Q_nf_sd = sd(Q_nf_diff);
+    A_fr_sd = sd(A_fr_diff);
+    A_nf_sd = sd(A_nf_diff);
+    R_fr_sd = sd(R_fr_diff);
+    R_nf_sd = sd(R_nf_diff);
+    C_sd = sd(C_diff);
   }//anonymous_scope_end
 }
 model{
@@ -378,16 +401,15 @@ model{
 }
 generated quantities{
   vector[n_rat] affect_lik; //log likelihoods of all affect rating
-  
+  real val_mod_rsq = variance(rat_pred)/(variance(rat_pred) + square(resid_sigma)); //valence model R^2
+
   //scaled effects of expected values
   real scd_rew_fr_sens_mu = Q_fr_sd*rew_fr_sens_mu;
   real scd_rew_nf_sens_mu = Q_nf_sd*rew_nf_sens_mu;
-  real scd_ma_fr_sens_mu = M_fr_sd*ma_fr_sens_mu;
-  real scd_ma_nf_sens_mu = M_nf_sd*ma_nf_sens_mu;
+  real scd_aff_fr_sens_mu = A_fr_sd*aff_fr_sens_mu;
+  real scd_aff_nf_sens_mu = A_nf_sd*aff_nf_sens_mu;
   real scd_resid_fr_sens_mu = R_fr_sd*resid_fr_sens_mu;
   real scd_resid_nf_sens_mu = R_nf_sd*resid_nf_sens_mu;
-  real scd_nuis_fr_sens_mu = N_fr_sd*nuis_fr_sens_mu;
-  real scd_nuis_nf_sens_mu = N_nf_sd*nuis_nf_sens_mu;
   real scd_csens_mu = C_sd*csens_mu;
   
   for(i in 1:n_rat){

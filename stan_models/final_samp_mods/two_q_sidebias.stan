@@ -116,6 +116,12 @@ parameters{
 transformed parameters {
   vector[n_s*n_t] choice_lik; //log likelihood of the choice on each trial
   vector[n_rat] rat_pred; //the predicted valence rating on each trial
+  
+  //SDs of expected values
+  real Q_fr_sd;
+  real A_fr_sd;
+  real C_sd;
+  
   {//anonymous_scope_start
     array[n_s,n_t] vector[n_f] Q_fr; //Q-value for trials where fractal result is received
     array[n_s,n_t] vector[n_f] Q_nf; //Q-value for trials where fractal result is not received
@@ -124,6 +130,12 @@ transformed parameters {
     array[n_s,n_t] vector[n_f] C; // Choice autocorrelation value
     real choice_a; // 1 if fractal A was chosen, 0 otherwise - used for C update
     real choice_b; // 1 if fractal B was chosen, 0 otherwise - used for C update
+    
+    //differences between Q, A, and C values of fractal A and fractal B
+    matrix[n_s,n_t] Q_diff;
+    matrix[n_s,n_t] A_diff;
+    matrix[n_s,n_t] C_diff;
+    
     
     vector[2] softmax_arg; //goes inside choice likelihood calculation
     
@@ -234,6 +246,9 @@ transformed parameters {
         }
       }
     }
+    Q_fr_sd = sd(Q_diff);
+    A_fr_sd = sd(A_diff);
+    C_sd = sd(C_diff);
   }//anonymous_scope_end
 }
 model{
@@ -304,6 +319,12 @@ model{
 }
 generated quantities{
   vector[n_rat] affect_lik; //log likelihoods of all affect rating
+  
+  //scaled effects of expected values
+  real scd_rew_fr_sens_mu = Q_fr_sd*rew_fr_sens_mu;
+  real scd_aff_fr_sens_mu = A_fr_sd*aff_fr_sens_mu;
+  real scd_csens_mu = C_sd*csens_mu;
+  
   for(i in 1:n_rat){
     affect_lik[i] = normal_lpdf(rat[i] | rat_pred[i], resid_sigma);
   }

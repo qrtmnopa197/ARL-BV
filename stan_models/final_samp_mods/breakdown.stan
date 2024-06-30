@@ -156,7 +156,6 @@ transformed parameters {
   real Q_fr_sd;
   real Q_nf_sd;
   real C_sd;
-  //because the effects of the following are fixed at 1, the SD is the standardized effect
   real M_fr_sd;
   real M_nf_sd;
   real R_fr_sd;

@@ -28,7 +28,8 @@ library(cmdstanr)
 library(loo)
 library(bayesplot)
 library(tidybayes)
-library(lme4)
+library(lmerTest)
+library(sigmoid)
 ```
 
 Read in data, run through QC
@@ -136,12 +137,6 @@ one_q <- fit_stan_model(stan_file=paste0(stan_model_dir,"one_q.stan"),
                                    raw_data=trials,
                                    study = "arlbv",
                                    n_t = 144)
-two_q <- fit_stan_model(stan_file=paste0(stan_model_dir,"two_q.stan"),
-                                   model_out_dir=model_out_dir,
-                                   raw_data=trials,
-                                   study = "arlbv",
-                                   n_t = 144,
-                                   iter_sampling = 5000)
 ```
 
 Check diagnostics
@@ -186,7 +181,7 @@ two_q_sidebias <- fit_stan_model(stan_file=paste0(stan_model_dir,"two_q_sidebias
                                    model_out_dir=model_out_dir,
                                    raw_data=trials,
                                    study = "arlbv",
-                                   chains = 3,
+                                   chains = 4,
                                    n_t = 144)
 ```
 
@@ -194,7 +189,31 @@ Compare
 ```{r}
 fsml_compare(two_q,two_q_sidebias)
 ```
-Not clearly better. Stick with two_q
+No clear improvement. Stick with two_q
+
+Testing effects of reward and affect associations on choice in two_q model
+```{r}
+twoq_aff <- get_draws("two_q",vars=c("scd_aff_fr_sens_mu"))
+quantile(twoq_aff,c(.025,.5,.975))
+mean(twoq_aff > 0)
+
+twoq_rew <- get_draws("two_q",vars=c("scd_rew_fr_sens_mu"))
+quantile(twoq_rew,c(.025,.5,.975))
+mean(twoq_rew > 0)
+```
+
+
+Now, trying a model with separate effects of model-predicted and residual valence on choice
+```{r}
+mod_resid_sep <- fit_stan_model(stan_file=paste0(stan_model_dir,"mod_resid_sep.stan"),
+                                   model_out_dir=model_out_dir,
+                                   raw_data=trials,
+                                   study = "arlbv",
+                                   n_t = 144)
+```
+
+Fits a bit better
+
 
 # Hypothesis tests
 
@@ -284,6 +303,7 @@ mcmc_areas(
   point_est = "median"
 )
 ```
+
 ```{r}
 mcmc_areas(
   mom_sens_draws,
@@ -367,13 +387,60 @@ quantile(breakdown_resid_sens,probs=c(.025,.5,.975))
 
 
 ```{r}
-temp_breakdown <- fit_stan_model(stan_file=paste0(stan_model_dir,"temp_breakdown.stan"),
+final <- fit_stan_model(stan_file=paste0(stan_model_dir,"final.stan"),
                                    model_out_dir=model_out_dir,
                                    raw_data=trials,
                                    study = "arlbv",
                                    n_t = 144,
-                                   chains = 3)
+                                   skip=c("check_csvs","loo"),
+                                   iter_sampling = 6000)
 ```
+
+```{r}
+final_Bbv <- get_draws("final",vars=c("B_bv_fr_mu"))
+final_Brew <- get_draws("final",vars=c("B_rew_fr_mu"))
+final_rew <- get_draws("final",vars=c("scd_rew_fr_sens_mu"))
+final_aff <- get_draws("final",vars=c("scd_aff_fr_sens_mu"))
+final_resid <- get_draws("final",vars=c("scd_resid_fr_sens_mu"))
+val_mod_rsq <- get_draws("final",vars=c("val_mod_rsq"))
+```
+
+```{r}
+trials_fres <- filter(trials,show_fres==1)
+final_Bbv_scd <- sd(trials_fres$box_val)*final_Bbv
+quantile(final_Bbv_scd,c(.025,.5,.975))
+mean(final_Bbv_scd < 1)
+```
+
+```{r}
+final_Brew_scd <- sd(trials_fres$out)*final_Brew
+quantile(final_Brew_scd,c(.025,.5,.975))
+mean(final_Brew_scd > 1)
+```
+
+
+```{r}
+quantile(final_aff-final_rew,c(.025,.5,.975))
+mean(final_aff > final_rew)
+quantile(final_aff,c(.025,.5,.975))
+mean(final_aff > 0)
+quantile(final_rew,c(.025,.5,.975))
+mean(final_rew > 0)
+```
+
+```{r}
+quantile(final_resid,c(.025,.5,.975))
+mean(final_resid > 0)
+
+quantile(final_aff-final_resid,c(.025,.5,.975))
+mean(final_aff > final_resid)
+```
+
+getting r-squared value
+```{r}
+median(val_mod_rsq)
+```
+
 
 # Regressing valence and reward onto choice
 
@@ -383,6 +450,7 @@ trials_fres <- filter(trials,show_fres == 1)
 trials_fres_scale <- trials_fres %>% mutate(valrat_z=scale(valrat_z),out=scale(out))
 stay_fit <- lmer(stay ~ valrat_z + out + (valrat_z + out | sub_index),trials_fres_scale)
 summary(stay_fit)
+confint(stay_fit, parm = c("valrat_z","out"))
 ```
 
 ```{r}
@@ -421,3 +489,90 @@ two_q_pe_comp <- fit_stan_model(stan_file=paste0(stan_model_dir,"two_q_pe_comp.s
                                    chains = 3,
                                    n_t = 144)
 ```
+
+```{r}
+aff_fr_sens <- get_draws("mod_resid_sep",vars=c("aff_fr_sens_mu"))
+resid_fr_sens <- get_draws("mod_resid_sep",vars=c("resid_fr_sens_mu"))
+quantile(aff_fr_sens-resid_fr_sens,c(.025,.5,.975))
+mean(aff_fr_sens > resid_fr_sens)
+
+get_draws("aff_fr_sens_mu_scd")
+
+aff_nf_sens <- get_draws("mod_resid_sep",vars=c("aff_nf_sens_mu"))
+resid_nf_sens <- get_draws("mod_resid_sep",vars=c("resid_nf_sens_mu"))
+quantile(aff_nf_sens-resid_nf_sens,c(.025,.5,.975))
+
+
+```
+
+# Get parameter estimates from final model not reported in the main article
+```{r}
+unreported_params <- "rew_nf_sens_mu|aff_nf_sens_mu|resid_nf_sens_mu|csens_mu|dcy_fr_mu|dcy_nf_mu|lrn_fr_mu|lrn_nf_mu|lrn_c_mu|B_0_mu|B_rew_nf_mu|B_q_fr_mu|B_q_nf_mu|B_pwqd_fr_mu|B_pwqd_nf_mu|B_auto_mu"
+up_tab <- select(filt_sum(final$sum,unreported_params),variable,median,q5,q95)
+up_tab[2,3,4] <- as.numeric(up_tab[2,3,4])
+```
+
+```{r}
+#replace the choice predictors with scaled effects
+scd_rew_nf_sens_mu <- get_draws("final",vars=c("scd_rew_nf_sens_mu"))
+up_tab[1,2:4] <- t(quantile(scd_rew_nf_sens_mu,c(.50,.05,.95)))
+scd_aff_nf_sens_mu <- get_draws("final",vars=c("scd_aff_nf_sens_mu"))
+up_tab[2,2:4] <- t(quantile(scd_aff_nf_sens_mu,c(.50,.05,.95)))
+scd_resid_nf_sens_mu <- get_draws("final",vars=c("scd_resid_nf_sens_mu"))
+up_tab[3,2:4] <- t(quantile(scd_resid_nf_sens_mu,c(.50,.05,.95)))
+scd_csens_mu <- get_draws("final",vars=c("scd_csens_mu"))
+up_tab[4,2:4] <- t(quantile(scd_csens_mu,c(.50,.05,.95)))
+```
+
+```{r}
+#sigmoid-transform the learning rates
+up_tab[5:9,2:4] <- sigmoid(up_tab[5:9,2:4])
+```
+
+```{r}
+up_tab[,c("median","q5","q95")] <- round(up_tab[,c("median","q5","q95")],2)
+write.csv(up_tab,"~/Desktop/temp.csv")
+```
+# Reanalysis
+
+After re-doing the model comparison between the one_q, two_q, and two_q_sidebias models, I realized that two_q_sidebias actually fit better. So you need to rerun the final model with sidebias, and redo the stats accordingly.
+```{r}
+final_ls <- fit_stan_model(stan_file=paste0(stan_model_dir,"final_ls.stan"),
+                                   model_out_dir=model_out_dir,
+                                   raw_data=trials,
+                                   study = "arlbv",
+                                   n_t = 144,
+                                   skip=c("check_csvs","loo"),
+                                   iter_sampling = 6000)
+```
+
+Fitting at 1000 iterations so it can be compared to two_q_sidebias, and so it finishes running quicker
+```{r}
+final_ls_test <- fit_stan_model(stan_file=paste0(stan_model_dir,"final_ls_test.stan"),
+                                   model_out_dir=model_out_dir,
+                                   raw_data=trials,
+                                   study = "arlbv",
+                                   n_t = 144)
+```
+
+```{r}
+fsml_compare(final_ls_test,two_q_sidebias)
+```
+```{r}
+scd_aff_fr_sens_mu <- get_draws("final_ls",vars=c("scd_aff_fr_sens_mu"),model_out_dir=model_out_dir)
+scd_rew_fr_sens_mu <- get_draws("final_ls",vars=c("scd_rew_fr_sens_mu"),model_out_dir=model_out_dir)
+quantile(scd_aff_fr_sens_mu-scd_rew_fr_sens_mu,c(.025,.5,.975))
+mean(scd_aff_fr_sens_mu > scd_rew_fr_sens_mu)
+```
+
+
+Get results from model with raw valence ratings
+```{r}
+prereg_aff <- get_draws("two_q_sidebias",vars=c("scd_aff_fr_sens_mu"),model_out_dir=model_out_dir)
+quantile(prereg_aff,c(.025,.5,.975))
+mean(prereg_aff > 0)
+prereg_rew <- get_draws("two_q_sidebias",vars=c("scd_rew_fr_sens_mu"),model_out_dir=model_out_dir)
+quantile(prereg_rew,c(.025,.5,.975))
+mean(prereg_rew > 0)          
+```
+
