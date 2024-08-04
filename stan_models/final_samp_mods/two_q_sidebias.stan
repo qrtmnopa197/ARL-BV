@@ -184,6 +184,11 @@ transformed parameters {
                       
         choice_lik[(s-1)*n_t+t] = categorical_logit_lpmf(choice[s,t] | softmax_arg); //get the likelihood of the choice on this trial
         
+        // Get differences between Q, A, C
+        Q_diff[s,t] = Q_fr[s,t,fA[s,t]] - Q_fr[s,t,fB[s,t]];
+        A_diff[s,t] = A_fr[s,t,fA[s,t]] - A_fr[s,t,fB[s,t]];
+        C_diff[s,t] = C[s,t,fA[s,t]] - C[s,t,fB[s,t]];
+        
         //Generate valence rating prediction
         if(fres[s,t] == 1){
           //if the fractal result was received...
