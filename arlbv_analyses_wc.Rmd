@@ -4,7 +4,11 @@ author: "Daniel P"
 output: html_document
 ---
 
-Set up
+# Overview
+This markdown contains all analyses run on the final sample of ARL-BV
+
+# Set up
+
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 options(mc.cores=12)
@@ -92,7 +96,7 @@ trials <- trials %>% mutate(chosen_frac = ifelse(choice == "fA",fA_ix,fB_ix))
 trials <- trials %>% mutate(unchosen_frac = ifelse(choice == "fA",fB_ix,fA_ix))
 ```
 
-Some additional data review
+# Data review
 
 ```{r}
 dr_vars <- c("valreg_rsq","bv_b","fres_b","fres_bv_ratio")
@@ -190,6 +194,10 @@ Compare
 fsml_compare(two_q,two_q_sidebias)
 ```
 
+The model with side bias fits better. HOWEVER, you initially thought that the model without side bias fit
+better, and you proceeded on that assumption. Below are analyses based on that faulty assumption. Under "Side
+Bias reanalysis", you rerun analyses to reflect the fact that the model should include side bias, after all.
+
 Testing effects of reward and affect associations on choice in two_q model
 ```{r}
 twoq_aff <- get_draws("two_q",vars=c("scd_aff_fr_sens_mu"))
@@ -201,42 +209,33 @@ quantile(twoq_rew,c(.025,.5,.975))
 mean(twoq_rew > 0)
 ```
 
-two_q_sidebias
+
+# Exploratory analyses
+
+## Momentum model
+Momentum model
 ```{r}
-aff_twoq_side <- get_draws("two_q_sidebias",vars=c("scd_aff_fr_sens_mu"),model_out_dir=model_out_dir)
-rew_twoq_side <- get_draws("two_q_sidebias",vars=c("scd_rew_fr_sens_mu"),model_out_dir=model_out_dir)
-
-cat("Effect of reward associations on choice\n")
-quantile(rew_twoq_side,c(.50,.025,.975))
-round(mean(rew_twoq_side > 0) * 100,1)
-
-cat("Effect of affect associations on choice\n")
-quantile(aff_twoq_side,c(.50,.025,.975))
-round(mean(aff_twoq_side > 0) * 100,1)
-```
-
-
-Now, trying a model with separate effects of model-predicted and residual valence on choice
-```{r}
-mod_resid_sep <- fit_stan_model(stan_file=paste0(stan_model_dir,"mod_resid_sep.stan"),
+mom_rat <- fit_stan_model(stan_file=paste0(stan_model_dir,"mom_rat.stan"),
                                    model_out_dir=model_out_dir,
                                    raw_data=trials,
                                    study = "arlbv",
+                                   chains = 3,
                                    n_t = 144)
 ```
 
-Fits a bit better
-
-
-# Hypothesis tests
-
-Posterior for effect of affect on choice
 ```{r}
-twoq_int_draws <- get_draws("two_q",model_out_dir=model_out_dir,vars=c("aff_fr_sens_mu","rew_fr_sens_mu","B_rew_fr_mu","B_rew_nf_mu","B_bv_fr_mu","B_auto_mu"))
-
+mom_terms <- get_draws("mom_rat",model_out_dir=model_out_dir,vars=c("x_sens_mu","aff_fr_sens_mu","B_auto_mu"))
 mcmc_areas(
-  twoq_int_draws,
-  pars = "aff_fr_sens_mu",
+  mom_terms,
+  pars = "x_sens_mu",
+  area_method = "scaled height",
+  prob = 0.9,
+  prob_outer = .99, 
+  point_est = "median"
+)
+total_mom <- mom_terms[,,"x_sens_mu"] + mom_terms[,,"aff_fr_sens_mu"]*mom_terms[,,"B_auto_mu"]
+mcmc_areas(
+  total_mom,
   area_method = "scaled height",
   prob = 0.9,
   prob_outer = .99, 
@@ -244,33 +243,7 @@ mcmc_areas(
 )
 ```
 
-Posterior for effect of reward on choice
-```{r}
-mcmc_areas(
-  twoq_int_draws,
-  pars = "rew_fr_sens_mu",
-  area_method = "scaled height",
-  prob = 0.9,
-  prob_outer = .99, 
-  point_est = "median"
-)
-```
-
-```{r}
-two_q_scds <- get_draws("two_q",model_out_dir=model_out_dir,vars = c("scd_aff_fr_sens_mu","scd_rew_fr_sens_mu","scd_csens_mu"))
-quantile(two_q_scds[,,"scd_aff_fr_sens_mu"],c(.025,.5,.975))
-quantile(two_q_scds[,,"scd_rew_fr_sens_mu"],c(.025,.5,.975))
-quantile(two_q_scds[,,"scd_csens_mu"],c(.025,.5,.975))
-```
-
-# Other model parameters
-
-```{r}
-two_q <- read_fsml("two_q",model_out_dir=model_out_dir)
-view(filt_sum(two_q$sum,"mu"))
-```
-
-# Exploratory analyses
+## Separating modeled and residual affect
 
 Predict RL using model-predicted affect, and residual affect, with a fuller affect model
 ```{r}
@@ -327,46 +300,12 @@ mcmc_areas(
   point_est = "median"
 )
 ```
+
 ```{r}
 filt_sum(mod_aff_resid$sum,"mu")
 ```
 
-calculate R squared for valence prediction from this
-```{r}
-```
-
-
-Momentum model
-```{r}
-mom_rat <- fit_stan_model(stan_file=paste0(stan_model_dir,"mom_rat.stan"),
-                                   model_out_dir=model_out_dir,
-                                   raw_data=trials,
-                                   study = "arlbv",
-                                   chains = 3,
-                                   n_t = 144)
-```
-
-```{r}
-mom_terms <- get_draws("mom_rat",model_out_dir=model_out_dir,vars=c("x_sens_mu","aff_fr_sens_mu","B_auto_mu"))
-mcmc_areas(
-  mom_terms,
-  pars = "x_sens_mu",
-  area_method = "scaled height",
-  prob = 0.9,
-  prob_outer = .99, 
-  point_est = "median"
-)
-total_mom <- mom_terms[,,"x_sens_mu"] + mom_terms[,,"aff_fr_sens_mu"]*mom_terms[,,"B_auto_mu"]
-mcmc_areas(
-  total_mom,
-  area_method = "scaled height",
-  prob = 0.9,
-  prob_outer = .99, 
-  point_est = "median"
-)
-```
-
-Breaking down effects of affect rating into trial-related, nuisance variation, and residual
+Now, breaking things down further: separately estimating effects of modeled affect, residual affect, and nuisance variation.
 ```{r}
 breakdown <- fit_stan_model(stan_file=paste0(stan_model_dir,"breakdown.stan"),
                                    model_out_dir=model_out_dir,
@@ -380,7 +319,8 @@ breakdown <- fit_stan_model(stan_file=paste0(stan_model_dir,"breakdown.stan"),
 filt_sum(breakdown$sum,"mu")
 filt_sum(mod_aff_resid$sum,"mu")
 ```
-Looks like it was worthwhile to break the result down like this - it resulted in much stronger estimates for aff_fres and allowed nuisance to be what it is.
+Looks like it was worthwhile to break the result down like this - it resulted in much stronger estimates for aff_fres and allowed the effect of nuisance affect to be what it is.
+
 ```{r}
 fsml_compare(breakdown,mod_aff_resid)
 ```
@@ -394,11 +334,20 @@ quantile(breakdown_ma_sens - breakdown_rew_sens,probs=c(.025,.5,.975))
 mean(breakdown_ma_sens > breakdown_rew_sens)
 breakdown_resid_sens <- get_draws("breakdown",vars=c("scd_resid_fr_sens_mu"))
 quantile(breakdown_resid_sens,probs=c(.025,.5,.975))
-
 ```
 
 
+Next, just running a model with separate effects of model-predicted and residual valence on choice, not including
+the orthogonal nuisance affect, for simplicity.
+```{r}
+mod_resid_sep <- fit_stan_model(stan_file=paste0(stan_model_dir,"mod_resid_sep.stan"),
+                                   model_out_dir=model_out_dir,
+                                   raw_data=trials,
+                                   study = "arlbv",
+                                   n_t = 144)
+```
 
+Rerunning this model with more iterations, and renaming it "final"
 ```{r}
 final <- fit_stan_model(stan_file=paste0(stan_model_dir,"final.stan"),
                                    model_out_dir=model_out_dir,
@@ -409,6 +358,7 @@ final <- fit_stan_model(stan_file=paste0(stan_model_dir,"final.stan"),
                                    iter_sampling = 6000)
 ```
 
+Getting effect estimates from the "final" model
 ```{r}
 final_Bbv <- get_draws("final",vars=c("B_bv_fr_mu"))
 final_Brew <- get_draws("final",vars=c("B_rew_fr_mu"))
@@ -454,10 +404,63 @@ getting r-squared value
 median(val_mod_rsq)
 ```
 
+# Side bias reanalysis
+
+After re-doing the model comparison between the one_q, two_q, and two_q_sidebias models, I realized that
+two_q_sidebias actually fit better. So below you rerun analyses accordingly.
+
+## New model
+```{r}
+final_ls <- fit_stan_model(stan_file=paste0(stan_model_dir,"final_ls.stan"),
+                                   model_out_dir=model_out_dir,
+                                   raw_data=trials,
+                                   study = "arlbv",
+                                   n_t = 144,
+                                   skip=c("check_csvs","loo"),
+                                   iter_sampling = 6000)
+```
+
+```{r}
+scd_aff_fr_sens_mu <- get_draws("final_ls",vars=c("scd_aff_fr_sens_mu"),model_out_dir=model_out_dir)
+scd_rew_fr_sens_mu <- get_draws("final_ls",vars=c("scd_rew_fr_sens_mu"),model_out_dir=model_out_dir)
+quantile(scd_aff_fr_sens_mu-scd_rew_fr_sens_mu,c(.025,.5,.975))
+mean(scd_aff_fr_sens_mu > scd_rew_fr_sens_mu)
+```
+
+I think you redid some of the stats but didn't put them in the markdown. Oh well. These analyses are in the
+manuscript repo, at least.
+
+Fitting at 1000 iterations so it can be compared to two_q_sidebias, and so it finishes running quicker
+```{r}
+final_ls_test <- fit_stan_model(stan_file=paste0(stan_model_dir,"final_ls_test.stan"),
+                                   model_out_dir=model_out_dir,
+                                   raw_data=trials,
+                                   study = "arlbv",
+                                   n_t = 144)
+```
+
+```{r}
+fsml_compare(final_ls_test,two_q_sidebias)
+```
+
+## Getting results from two_q_sidebias
+
+```{r}
+aff_twoq_side <- get_draws("two_q_sidebias",vars=c("scd_aff_fr_sens_mu"),model_out_dir=model_out_dir)
+rew_twoq_side <- get_draws("two_q_sidebias",vars=c("scd_rew_fr_sens_mu"),model_out_dir=model_out_dir)
+
+cat("Effect of reward associations on choice\n")
+quantile(rew_twoq_side,c(.50,.025,.975))
+round(mean(rew_twoq_side > 0) * 100,1)
+
+cat("Effect of affect associations on choice\n")
+quantile(aff_twoq_side,c(.50,.025,.975))
+round(mean(aff_twoq_side > 0) * 100,1)
+```
 
 # Regressing valence and reward onto choice
 
-
+Do a model-free test of whether valence and reward both predict choice
 ```{r}
 trials_fres <- filter(trials,show_fres == 1)
 trials_fres_scale <- trials_fres %>% mutate(valrat_z=scale(valrat_z),out=scale(out))
@@ -465,33 +468,13 @@ stay_fit <- lmer(stay ~ valrat_z + out + (valrat_z + out | sub_index),trials_fre
 summary(stay_fit)
 confint(stay_fit, parm = c("valrat_z","out"))
 ```
-```{r}
-trials_fres_lags <- add_lag_cols(trials_fres,c("valrat_z","out"),lags=c(1:4))
-```
 
-```{r}
-trials_diffs <- do.call(rbind,by(trials,trials$sub_index,sub_past_diffs))
-
-diff_reg_fit_1 <- lmer(stay ~ valrat_z_diff_1 + out_diff_1 + (valrat_z_diff_1 + out_diff_1 | sub_index),trials_diffs)
-diff_reg_fit_1 <- lm(stay ~ valrat_z_diff_1 + out_diff_1,trials_diffs)
-
-summary(diff_reg_fit_1)
-
-diff_reg_fit_3 <- lmer(stay ~ valrat_z_diff_1 + out_diff_1 + valrat_z_diff_2 + out_diff_2 + valrat_z_diff_3 + out_diff_3 +
-                              (valrat_z_diff_1 + out_diff_1 + valrat_z_diff_2 + out_diff_2 + valrat_z_diff_3 + out_diff_3 | sub_index),trials_diffs)
-
-diff_reg_fit_3 <- lm(stay ~ valrat_z_diff_1 + out_diff_1 + valrat_z_diff_2 + out_diff_2 + valrat_z_diff_3 + out_diff_3,trials_diffs)
-summary(diff_reg_fit_3)$coefficients
-coef_values <- coefficients[2:4, 1]
-```
-```{r}
-library(car)
-linearHypothesis(diff_reg_fit_3,"valrat_z_diff_1 - valrat_z_diff_2 = 0")
-linearHypothesis(diff_reg_fit_3,"valrat_z_diff_1 - valrat_z_diff_3 = 0")
-```
 
 #Utility vs. reinforcement test
 
+Finally, testing the hypothesis that valence reflects utility rather than reinforcement in this task.
+
+final_ls but affect is reinforcement rather than utility
 ```{r}
 flt_pe <- fit_stan_model(stan_file=paste0(stan_model_dir,"flt_pe.stan"),
                                    model_out_dir=model_out_dir,
@@ -513,7 +496,7 @@ fsml_compare(flt_pe,flt)
 ```
 No real difference here
 
-Testing with modeled affect only
+Now doing the comparison if you only predict choice with modeled affect.
 ```{r}
 mod_aff <- fit_stan_model(stan_file=paste0(stan_model_dir,"mod_aff.stan"),
                                    model_out_dir=model_out_dir,
@@ -536,7 +519,7 @@ fsml_compare(mod_aff,mod_aff_pe)
 Still no meaningful difference.
 
 
-Testing if BV impacts choice more as utility or reinforcement
+Now, testing if BV impacts choice more as utility or reinforcement
 ```{r}
 rew_bv <- fit_stan_model(stan_file=paste0(stan_model_dir,"rew_bv.stan"),
                                    model_out_dir=model_out_dir,
@@ -587,33 +570,7 @@ fsml_compare(rew_min_bv,rew_min_bv_pe)
 ```
 Still no difference.
 
-Finally, testing with raw valence ratings.
-```{r}
-two_q_pe <- fit_stan_model(stan_file=paste0(stan_model_dir,"two_q_pe.stan"),
-                                   model_out_dir=model_out_dir,
-                                   raw_data=trials,
-                                   study = "arlbv",
-                                   chains = 3,
-                                   n_t = 144)
-two_q_pe <- read_fsml("two_q_pe",model_out_dir=model_out_dir)
-```
-
-```{r}
-two_q <- get_loo_from_csvs(files=c("/Users/dp/projects/ARL_bv/output/results/stan_model_fits/final_samp_fits/two_q/two_q-202406271907-2-82bfa0.csv", "/Users/dp/projects/ARL_bv/output/results/stan_model_fits/final_samp_fits/two_q/two_q-202406271907-3-82bfa0.csv", "/Users/dp/projects/ARL_bv/output/results/stan_model_fits/final_samp_fits/two_q/two_q-202406271907-1-82bfa0.csv"),variables=c("choice_lik","affect_lik"))
-loo_compare(two_q,two_q_pe$loo)
-```
-
-```{r}
-two_q_pe_comp <- fit_stan_model(stan_file=paste0(stan_model_dir,"two_q_pe_comp.stan"),
-                                   model_out_dir=model_out_dir,
-                                   raw_data=trials,
-                                   study = "arlbv",
-                                   chains = 3,
-                                   n_t = 144)
-```
-
-This is a confusing result. Why is the SE so big when calculating loo this way, but not with the original loo calculation with 4 chains?
-I think you need to just start over with this - it's unclear what you did here.
+Finally, run these tests with raw valence ratings.
 ```{r}
 two_q_sidebias_pe <- fit_stan_model(stan_file=paste0(stan_model_dir,"two_q_sidebias_pe.stan"),
                                    model_out_dir=model_out_dir,
@@ -650,7 +607,33 @@ two_q_sidebias_aonly <- fit_stan_model(stan_file=paste0(stan_model_dir,"two_q_si
 ```{r}
 fsml_compare(two_q_sidebias_pe_aonly,two_q_sidebias_aonly)
 ```
+Same result, but more dramatic.
 
+
+Finally, testing whether the effect of valence on choice can be seen to reflect an exponential decay in raw
+regression coefficients.
+
+```{r}
+trials_diffs <- do.call(rbind,by(trials,trials$sub_index,sub_past_diffs))
+
+diff_reg_fit_1 <- lmer(stay ~ valrat_z_diff_1 + out_diff_1 + (valrat_z_diff_1 + out_diff_1 | sub_index),trials_diffs)
+diff_reg_fit_1 <- lm(stay ~ valrat_z_diff_1 + out_diff_1,trials_diffs)
+
+summary(diff_reg_fit_1)
+
+diff_reg_fit_3 <- lmer(stay ~ valrat_z_diff_1 + out_diff_1 + valrat_z_diff_2 + out_diff_2 + valrat_z_diff_3 + out_diff_3 +
+                              (valrat_z_diff_1 + out_diff_1 + valrat_z_diff_2 + out_diff_2 + valrat_z_diff_3 + out_diff_3 | sub_index),trials_diffs)
+
+diff_reg_fit_3 <- lm(stay ~ valrat_z_diff_1 + out_diff_1 + valrat_z_diff_2 + out_diff_2 + valrat_z_diff_3 + out_diff_3,trials_diffs)
+summary(diff_reg_fit_3)$coefficients
+coef_values <- coefficients[2:4, 1]
+```
+
+```{r}
+library(car)
+linearHypothesis(diff_reg_fit_3,"valrat_z_diff_1 - valrat_z_diff_2 = 0")
+linearHypothesis(diff_reg_fit_3,"valrat_z_diff_1 - valrat_z_diff_3 = 0")
+```
 
 # Get parameter estimates from final model not reported in the main article
 ```{r}
@@ -675,59 +658,3 @@ up_tab[,c("median","q5","q95")] <- round(up_tab[,c("median","q5","q95")],2)
 write.csv(up_tab,paste0(fig_dir,"unrep_params_s3.csv")) # This CSV will be converted into a figure
 ```
 
-# Reanalysis
-
-After re-doing the model comparison between the one_q, two_q, and two_q_sidebias models, I realized that two_q_sidebias actually fit better. So you need to rerun the final model with sidebias, and redo the stats accordingly.
-```{r}
-final_ls <- fit_stan_model(stan_file=paste0(stan_model_dir,"final_ls.stan"),
-                                   model_out_dir=model_out_dir,
-                                   raw_data=trials,
-                                   study = "arlbv",
-                                   n_t = 144,
-                                   skip=c("check_csvs","loo"),
-                                   iter_sampling = 6000)
-```
-
-Fitting at 1000 iterations so it can be compared to two_q_sidebias, and so it finishes running quicker
-```{r}
-final_ls_test <- fit_stan_model(stan_file=paste0(stan_model_dir,"final_ls_test.stan"),
-                                   model_out_dir=model_out_dir,
-                                   raw_data=trials,
-                                   study = "arlbv",
-                                   n_t = 144)
-```
-
-```{r}
-fsml_compare(final_ls_test,two_q_sidebias)
-```
-```{r}
-scd_aff_fr_sens_mu <- get_draws("final_ls",vars=c("scd_aff_fr_sens_mu"),model_out_dir=model_out_dir)
-scd_rew_fr_sens_mu <- get_draws("final_ls",vars=c("scd_rew_fr_sens_mu"),model_out_dir=model_out_dir)
-quantile(scd_aff_fr_sens_mu-scd_rew_fr_sens_mu,c(.025,.5,.975))
-mean(scd_aff_fr_sens_mu > scd_rew_fr_sens_mu)
-```
-
-
-Get results from model with raw valence ratings
-```{r}
-prereg_aff <- get_draws("two_q_sidebias",vars=c("scd_aff_fr_sens_mu"),model_out_dir=model_out_dir)
-quantile(prereg_aff,c(.025,.5,.975))
-mean(prereg_aff > 0)
-prereg_rew <- get_draws("two_q_sidebias",vars=c("scd_rew_fr_sens_mu"),model_out_dir=model_out_dir)
-quantile(prereg_rew,c(.025,.5,.975))
-mean(prereg_rew > 0)          
-```
-
-test the effects of Q and A using a model - two_q_sidebias - that updates A with raw valence ratings.
-```{r}
-aff_twoq_side <- get_draws("two_q_sidebias",vars=c("scd_aff_fr_sens_mu"),model_out_dir=model_out_dir)
-rew_twoq_side <- get_draws("two_q_sidebias",vars=c("scd_rew_fr_sens_mu"),model_out_dir=model_out_dir)
-
-cat("Effect of reward associations on choice\n")
-quantile(rew_twoq_side,c(.50,.025,.975))
-round(mean(rew_twoq_side > 0) * 100,1)
-
-cat("Effect of affect associations on choice\n")
-quantile(aff_twoq_side,c(.50,.025,.975))
-round(mean(aff_twoq_side > 0) * 100,1)
-```
