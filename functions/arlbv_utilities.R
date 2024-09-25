@@ -1,3 +1,41 @@
+est_bq_ba <- function(trials){
+  
+  
+  
+
+  list("bQ"=,"bA"=)
+}
+
+# Adds a column to a trial-level dataset with the mean estimates of subject-level parameters
+# sum: model summary object
+# param: name of parameter
+# trials: trial-level dataset
+# sig_trans: if true, will run the parameter mean through an inverse logistic function
+add_param_means <- function(sum,param,trials,sig_trans=T){
+  means_list <- ncp_mean_hist(sum,param,print_hist=F)
+  if(sig_trans){
+    means_vec <- means_list$means %>% sigmoid()
+  } else{
+    means_vec <- means_list$means
+  }
+  means_df <- data.frame(means_vec,c(1:length(means_vec)))
+  colnames(means_df) <- c(param,"sub_index")
+  left_join(trials,means_df,by="sub_index")
+}
+
+
+# This function works like vec_optim, but it is tailored to approximate the effects of rewards and box values 
+# on choices using vectors that represent reward associations and affect associations.
+rew_bv_vec_optim <- function(eff_vec,init_pars = c(0,0)){
+  target <- eff_vec[1:2] # Effects of reward and bv on choice
+  rew_dvec <- c(1,0)
+  aff_dvec <- eff_vec[3:4]/(abs(eff_vec[3]) + abs(eff_vec[4])) # Effects of reward and bv on valence, normalized
+  dvec_mat <- cbind(rew_dvec,aff_dvec)
+  
+  optim_fit <- optim(par = init_pars, fn = vec_ss, dvec=dvec_mat, target=target, method = "L-BFGS-B", lower=0)
+  return(optim_fit$par)
+}
+
 #accepts a subject-level trials df, and returns the same df with columns for the differences between the past 
 #valence/reward/etc. values of the chosen and unchosen fractal
 sub_past_diffs <- function(s_trials,columns=c("valrat_z","out"),past_trials=3){

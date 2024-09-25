@@ -34,6 +34,7 @@ library(bayesplot)
 library(tidybayes)
 library(lmerTest)
 library(sigmoid)
+library(abind)
 ```
 
 Read in data, run through QC
@@ -656,5 +657,117 @@ up_tab[6:10,2:4] <- sigmoid(up_tab[6:10,2:4]) # Transform learning/decay rates t
 
 up_tab[,c("median","q5","q95")] <- round(up_tab[,c("median","q5","q95")],2)
 write.csv(up_tab,paste0(fig_dir,"unrep_params_s3.csv")) # This CSV will be converted into a figure
+```
+
+# Vector-based analysis of choice
+```{r}
+rew_bv_final <- fit_stan_model(stan_file=paste0(stan_model_dir,"rew_bv_final.stan"),
+                                   model_out_dir=model_out_dir,
+                                   raw_data=trials,
+                                   study = "arlbv",
+                                   n_t = 144,
+                                   skip=c("check_csvs","loo"))
+```
+
+
+Generate length estimates
+```{r}
+rb_draws <- get_draws("rew_bv_final",vars=c("rew_fr_sens_mu","bv_fr_sens_mu","B_rew_fr_mu","B_bv_fr_mu"))
+vec_ws <- apply(rb_draws,c(1,2), rew_bv_vec_optim) # Estimate vec lengths
+vec_ws_org <- aperm(vec_ws, c(2,3,1)) # Get the dimensions back in order
+
+#Get the Manhattan norm ratios for these lengths 
+mn_data <- apply(rb_draws[,,c(1:2)],c(1,2),function(x) sum(abs(x))) # Get Manhattan norms
+comb_array <- abind(vec_ws_org,mn_data,along=3) 
+vec_ws_norm <- apply(comb_array,c(1,2), get_ports) 
+
+#Arrange and name properly
+vec_ws_norm_org <- aperm(vec_ws_norm,c(2,3,1)) 
+dimnames(vec_ws_norm_org)[[3]] <- c("rew","aff","resid") 
+```
+
+Get 95% credible intervals and pd values for all vectors
+```{r}
+cat("rew\n")
+quantile(vec_ws_norm_org[,,"rew"],c(.50,.025,.975))
+cat(paste0("pd:", round(mean(vec_ws_norm_org[,,"rew"] > 0) * 100,1)))
+
+cat("\n\naff\n")
+quantile(vec_ws_norm_org[,,"aff"],c(.50,.025,.975))
+cat(paste0("pd:", round(mean(vec_ws_norm_org[,,"aff"] > 0) * 100,1)))
+```
+
+Create interval plots for Manhattan norm ratios
+```{r}
+variable_intervals<- create_interval_plot(arr = vec_ws_norm_org,names = c("resid","aff","rew"),
+                                          xmin = -.012,xmax = 1) +
+                        theme(panel.grid.major.x = element_line(color = "#DCDCDC", size = .47),
+                              panel.background = element_rect(fill = "white", color = NA),
+                              axis.text.x = element_blank(),
+                              axis.text.y=element_blank())
+
+#ggsave(paste0(fig_dir,"vec_lens_s3.pdf"),variable_intervals,width=1.8,height=1.35)
+```
+
+# Testing for spurious positive effects of reward associations
+Here, we consider whether the observed effect of reward associations on choice could be due to its collinearity
+with affect assocations.
+
+First, we fit a model and simulate data in which only affect associations influence choice
+```{r}
+# aff_only_s3 <- fit_stan_model(stan_file=paste0(stan_model_dir,"aff_only_s3.stan"),
+#                                    model_out_dir=model_out_dir,
+#                                    raw_data=trials,
+#                                    study = "arlbv",
+#                                    n_t = 144,
+#                                    skip=c("check_csvs","loo"))
+aff_only_s3 <- read_fsml("aff_only_s3",model_out_dir=model_out_dir)
+```
+
+For each simulated dataset, we estimate the effects of Q and A on choice, using an analysis method that 
+efficiently approximates the model reported in the manuscript
+```{r}
+# Get necessary data
+trials_bqba_sim <- trials %>% select(sub_index,block,overall_trial_nl,chosen_frac,unchosen_frac,fA_ix,fB_ix,rat_number)
+
+# Add parameter means needed for approximate data analysis
+trials_bqba_sim <- add_param_means(aff_only_s3$sum,"lrn_fr",trials_bqba_sim)
+trials_bqba_sim <- add_param_means(aff_only_s3$sum,"lrn_nf",trials_bqba_sim)
+trials_bqba_sim <- add_param_means(aff_only_s3$sum,"dcy_fr",trials_bqba_sim)
+trials_bqba_sim <- add_param_means(aff_only_s3$sum,"dcy_nf",trials_bqba_sim)
+trials_bqba_sim <- add_param_means(aff_only_s3$sum,"lrn_c",trials_bqba_sim)
+
+# Get simulated data
+sim_choice <- get_draws(model="aff_only_s3",vars=c("sim_choice"),model_out_dir=model_out_dir)
+sim_rat <- get_draws("aff_only_s3",vars=c("sim_rat"),model_out_dir=model_out_dir)
+
+# Estimate effects of Q and A on choice for each simulated dataset
+sim_bQ <- c()
+sim_bA <- c()
+# Loop through every posterior draw
+for(i in 1:dim(sim_rat)[1]){
+  for(c in 1:dim(sim_rat)[2]){
+    # Add simulated choices and ratings to the data
+    sim_trials <- trials_bqba_sim %>% 
+                    mutate(choice=as.vector(sim_choice[i,c,])) %>%
+                    left_join(data.frame(valrat_z = as.vector(sim_rat[i,c,]),rat_number = 1:dim(sim_rat)[3]),
+                              by="rat_number") 
+    # Get estimated effects of Q and A on choice
+    est_eff <- est_bq_ba(sim_trials)
+    sim_bQ <- c(sim_bQ,est_eff$bQ)
+    sim_bA <- c(sim_bA,est_eff$bA)
+  }
+}
+```
+
+
+Next, we run these same approximate analyses on the real data
+```{r}
+
+```
+
+Finally, we plot the simulated and actual effects for comparison
+```{r}
+
 ```
 
