@@ -746,31 +746,37 @@ sim_rat <- get_draws("aff_only_s3",vars=c("sim_rat"),model_out_dir=model_out_dir
 sim_prat <- get_draws("aff_only_s3",vars=c("sim_prat"),model_out_dir=model_out_dir)
 
 
+
 plan(multisession, workers = 12)
 registerDoFuture()
 
-result <- foreach(i = 1:24, .combine = 'c') %dopar% {
-  # Each iteration returns a list
-  list(list(one = i, two = i^2))
-}
-
-
-# Estimate effects of Q and A on choice for each simulated dataset
-# Loop through every posterior draw
-for(i in 1:dim(sim_rat)[1]){
-  for(c in 1:dim(sim_rat)[2]){
-    # Add simulated choices and ratings to the data
-    sim_trials <- trials_bqba_sim %>% 
-                    mutate(choice=as.vector(sim_choice[i,c,])) %>%
-                    mutate(prat=as.vector(sim_prat[i,c,])) %>%
-                    left_join(data.frame(valrat_z = as.vector(sim_rat[i,c,]),rat_number = 1:dim(sim_rat)[3]),
-                              by="rat_number") %>%
-                    mutate(chosen_frac = ifelse(choice == 1,fA_ix,fB_ix)) %>%
-                    mutate(unchosen_frac = ifelse(choice == 1,fB_ix,fA_ix))
-    # Get estimated effects of Q and A on choice
-    est_eff <- est_bq_ba(sim_trials)
-    list(est_eff)
+sim_effs <- data.frame("bQs"=c(),"bAs"=c())
+for(chunk in 1:2){
+  # Divide the simulations into 8 chunks, to avoid taxing memory
+  iters <- ((chunk-1)*12+1):(chunk*12)
+  sim_choice_chunk <- sim_choice[iters,,]
+  sim_prat_chunk <- sim_prat[iters,,]
+  sim_rat_chunk <- sim_rat[iters,,]
+  chunk_effs <- foreach(i = 1:12, .combine = rbind) %dopar% {
+    iter_effs <- data.frame(matrix(0,ncol=2,nrow=4))
+    colnames(iter_effs) <- c("bQs","bAs")
+    for(c in 1:4){
+      # Add simulated choices and ratings to the data
+      sim_trials <- trials_bqba_sim %>% 
+                      mutate(choice=as.vector(sim_choice_chunk[i,c,])) %>%
+                      mutate(prat=as.vector(sim_prat_chunk[i,c,])) %>%
+                      left_join(data.frame(valrat_z = as.vector(sim_rat_chunk[i,c,]),rat_number = 1:dim(sim_rat_chunk)[3]),
+                                by="rat_number") %>%
+                      mutate(chosen_frac = ifelse(choice == 1,fA_ix,fB_ix)) %>%
+                      mutate(unchosen_frac = ifelse(choice == 1,fB_ix,fA_ix))
+      # Get estimated effects of Q and A on choice
+      est_eff <- est_bq_ba(sim_trials)
+      iter_effs$bQs[c] <- est_eff$bQ
+      iter_effs$bAs[c] <- est_eff$bA
+    }
+    return(iter_effs)
   }
+  sim_effs <- rbind(sim_effs,chunk_effs)
 }
 ```
 
