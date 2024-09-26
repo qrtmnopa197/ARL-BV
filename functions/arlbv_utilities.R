@@ -1,9 +1,129 @@
-est_bq_ba <- function(trials){
+est_bq_ba <- function(data){
+  # Get Q_fr values
+  data_list <- by(data,data$sub_index, add_assoc, cue_cols = "chosen_frac", out_cols = "out", update_col = "show_fres", 
+                  num_assoc = 6, assoc_name = "q_fr", lrn_rate = "lrn_fr", for_rate = "dcy_fr")
+  data <- do.call(rbind,data_list)
+  for(r in 1:nrow(data)){
+    data$q_fr_ch[r] <- data[r,paste0("q_fr_",data$chosen_frac[r])]
+    data$q_fr_unch[r] <- data[r,paste0("q_fr_",data$unchosen_frac[r])]
+  }
+  # Estimate affect on each trial
+  data_fres <- filter(data,show_fres==1)
+  data_nofres <- filter(data,show_fres==0)
+  fres_fit <- lm(valrat_z ~ out + box_val + q_fr_ch + q_fr_unch + prat, data_fres)
+  nofres_fit <- lm(valrat_z ~ out + q_fr_ch + q_fr_unch + prat, data_nofres)
+  data <- data %>% 
+            mutate(mod_val = ifelse(
+                              show_fres == 1,
+                              fres_fit$coefficients[1] + fres_fit$coefficients[2]*out +
+                                fres_fit$coefficients[3]*box_val + fres_fit$coefficients[4]*q_fr_ch +
+                                fres_fit$coefficients[5]*q_fr_unch,
+                              nofres_fit$coefficients[1] + nofres_fit$coefficients[2]*out +
+                                nofres_fit$coefficients[3]*q_fr_ch + nofres_fit$coefficients[4]*q_fr_unch
+                              )
+            ) %>%
+            mutate(resid = ifelse(is.na(valrat_z),0,valrat_z - mod_val))
+          
+  # Get remaining associations used to predict choice
+  data <- data %>%
+            mutate(no_fres=ifelse(show_fres==1,0,1)) %>%
+            mutate(fA_chosen=ifelse(choice==1,1,0)) %>%
+            mutate(fB_chosen=ifelse(choice==2,1,0))
   
+  data <- data %>%
+            split(data$sub_index) %>%
+              lapply(add_assoc, cue_cols = "chosen_frac", out_cols = "out", update_col = "no_fres", 
+                     num_assoc = 6, assoc_name = "q_nf", lrn_rate = "lrn_nf", for_rate = "dcy_nf") %>%
+              lapply(add_assoc, cue_cols = "chosen_frac", out_cols = "mod_val", update_col = "show_fres", 
+                     num_assoc = 6, assoc_name = "a_fr", lrn_rate = "lrn_fr", for_rate = "dcy_fr") %>%
+              lapply(add_assoc, cue_cols = "chosen_frac", out_cols = "mod_val", update_col = "no_fres", 
+                     num_assoc = 6, assoc_name = "a_nf", lrn_rate = "lrn_nf", for_rate = "dcy_nf") %>%
+              lapply(add_assoc, cue_cols = "chosen_frac", out_cols = "resid", update_col = "show_fres", 
+                     num_assoc = 6, assoc_name = "r_fr", lrn_rate = "lrn_fr", for_rate = "dcy_fr") %>%
+              lapply(add_assoc, cue_cols = "chosen_frac", out_cols = "resid", update_col = "no_fres", 
+                     num_assoc = 6, assoc_name = "r_nf", lrn_rate = "lrn_nf", for_rate = "dcy_nf") %>%
+              lapply(add_assoc, cue_cols = c("fA_ix","fB_ix"), out_cols = c("fA_chosen","fB_chosen"),
+                     num_assoc = 6, assoc_name = "c", lrn_rate = "lrn_c") %>%
+            bind_rows()
   
+  # Get choice predictor differences
+  for(r in 1:nrow(data)){
+    data[r,"c_A"] <- data[r,paste0("c_",data[r,"fA_ix"])]
+    data[r,"c_B"] <- data[r,paste0("c_",data[r,"fB_ix"])]
+    data[r,"q_fr_A"] <- data[r,paste0("q_fr_",data[r,"fA_ix"])]
+    data[r,"q_fr_B"] <- data[r,paste0("q_fr_",data[r,"fB_ix"])]
+    data[r,"a_fr_A"] <- data[r,paste0("a_fr_",data[r,"fA_ix"])]
+    data[r,"a_fr_B"] <- data[r,paste0("a_fr_",data[r,"fB_ix"])]
+    data[r,"r_fr_A"] <- data[r,paste0("r_fr_",data[r,"fA_ix"])]
+    data[r,"r_fr_B"] <- data[r,paste0("r_fr_",data[r,"fB_ix"])]
+    data[r,"q_nf_A"] <- data[r,paste0("q_nf_",data[r,"fA_ix"])]
+    data[r,"q_nf_B"] <- data[r,paste0("q_nf_",data[r,"fB_ix"])]
+    data[r,"a_nf_A"] <- data[r,paste0("a_nf_",data[r,"fA_ix"])]
+    data[r,"a_nf_B"] <- data[r,paste0("a_nf_",data[r,"fB_ix"])]
+    data[r,"r_nf_A"] <- data[r,paste0("r_nf_",data[r,"fA_ix"])]
+    data[r,"r_nf_B"] <- data[r,paste0("r_nf_",data[r,"fB_ix"])]
+  }
+  data <- data %>%
+            mutate(c_diff = c_A - c_B) %>%
+            mutate(q_fr_diff = q_fr_A - q_fr_B) %>%
+            mutate(a_fr_diff = a_fr_A - a_fr_B) %>%
+            mutate(r_fr_diff = r_fr_A - r_fr_B) %>%
+            mutate(q_nf_diff = q_nf_A - q_nf_B) %>%
+            mutate(a_nf_diff = a_nf_A - a_nf_B) %>%
+            mutate(r_nf_diff = r_nf_A - r_nf_B)
+            
   
+  # Estimate standardized effects on choice
+  choice_fit <- glm(fA_chosen ~ scale(q_fr_diff) + scale(a_fr_diff) + scale(r_fr_diff) + 
+                                scale(q_nf_diff) + scale(a_nf_diff) + scale(r_nf_diff) +  scale(c_diff),
+                                data, family = "binomial")
+  
+  list("bQ"=choice_fit$coefficients[2],"bA"=choice_fit$coefficients[3])
+}
 
-  list("bQ"=,"bA"=)
+
+# Adds columns to a data frame with values of cue associations (e.g., reward associations, affect associations)
+# on each trial
+# cue_cols: columns with cues for which an outcome was observed
+# out_cols: columns with the outcomes of the cues (in the same order)
+# update_col: columns indicating whehter to do any updating on the current trial. Defaults to assuming that 
+#   updating should occur on every trial.
+# num_assoc: number of associations to estimate
+# assoc_name: how to name the associations
+# lrn_rate: learning rate; a string for a column of the df containing the learning rate, a # otherwise
+# for_rate: forgetting rate; a string for a column of the df containing the learning rate, a # otherwise
+# init_val: initial values for the associations
+add_assoc <- function(data, cue_cols, out_cols, update_col = NULL, num_assoc, assoc_name, lrn_rate, for_rate=0, 
+                      init_val=0){
+  # Initialize df with association values
+  cues <- data[cue_cols]
+  outs <- data[out_cols]
+  if(is.null(update_col)){
+    update <- rep(1,nrow(data))
+  } else{
+    update <- data[[update_col]]
+  }
+
+  assoc <- data.frame(matrix(init_val, ncol = num_assoc, nrow = nrow(data)))
+  colnames(assoc) <- paste0(assoc_name, "_", 1:num_assoc)
+  
+  if(is.character(lrn_rate)){
+    lrn_rate <- data[1,lrn_rate]
+  } 
+  if(is.character(for_rate)){
+    for_rate <- data[1,for_rate]
+  } 
+
+  for(r in 1:(nrow(data)-1)){
+    assoc[r+1,] <- assoc[r,]*(1-for_rate) # Default to same value as above
+    if(update[r] == 1){
+      # For cues with outcomes, update the association
+      cues_r <- as.vector(unlist(cues[r,]))
+      assoc[r+1,cues_r] <- assoc[r,cues_r] + 
+        lrn_rate*(outs[r,] - assoc[r,cues_r])
+    }
+  }
+  cbind(data,assoc)
 }
 
 # Adds a column to a trial-level dataset with the mean estimates of subject-level parameters

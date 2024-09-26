@@ -390,6 +390,7 @@ generated quantities{
   // Simulate data
   vector[n_s*n_t] sim_choice;
   vector[n_rat] sim_rat;
+  vector[n_s*n_t] sim_prat;
   {
     array[n_s,n_t] vector[n_f] Q_fr; //Q-value for trials where fractal result is received
     array[n_s,n_t] vector[n_f] A_fr; //ditto A-value...
@@ -431,6 +432,8 @@ generated quantities{
     real nuis; //the nuisance variation in valence for the current trial
     real resid; //affect residual on the current trial
     
+    real curr_prat; // Current previous rating
+    
     vector[2] softmax_arg;
     
     for (s in 1:n_s) {
@@ -444,12 +447,18 @@ generated quantities{
           R_nf[s,t] = rep_vector(0,n_f); 
           C[s,t] = rep_vector(0,n_f);
         }
+        // If it's the first trial of the block, set previous rating to 0
+        if(t % 48 == 1){
+          curr_prat = 0;
+        }
         
         softmax_arg = aff_fr_sens[s]*A_fr[s,t,{fA[s,t],fB[s,t]}] + aff_nf_sens[s]*A_nf[s,t,{fA[s,t],fB[s,t]}] +
                       resid_fr_sens[s]*R_fr[s,t,{fA[s,t],fB[s,t]}] + resid_nf_sens[s]*R_nf[s,t,{fA[s,t],fB[s,t]}] +
                       csens[s]*C[s,t,{fA[s,t],fB[s,t]}] + [ls_bias[s],0]'; //set argument for softmax decision function
                       
         sim_choice[(s-1)*n_t+t] = categorical_logit_rng(softmax_arg); 
+        
+        sim_prat[(s-1)*n_t+t] = curr_prat;
         
         //Generate valence rating prediction
         if(fres[s,t] == 1){
@@ -461,7 +470,7 @@ generated quantities{
           curr_pred = B_0[s] + B_rew_nf[s]*rew[s,t] + B_q_nf[s]*Q_fr[s,t,chosen_frac[s,t]] + 
                       B_pwqd_nf[s]*(Q_fr[s,t,chosen_frac[s,t]]*exp(choice_lik[(s-1)*n_t+t]) + Q_fr[s,t,unchosen_frac[s,t]]*(1-exp(choice_lik[(s-1)*n_t+t])));
         }
-        nuis = B_auto[s]*prev_rat[s,t];
+        nuis = B_auto[s]*curr_prat;
         
         
         
@@ -469,6 +478,7 @@ generated quantities{
           //if the participant made a valence rating... 
           sim_rat[rat_num[s,t]] = normal_rng(curr_pred + nuis,resid_sigma); //add to the vector of predicted ratings
           resid = sim_rat[rat_num[s,t]] - (curr_pred + nuis);
+          curr_prat = sim_rat[rat_num[s,t]];
         } else{
           resid = 0;
         }

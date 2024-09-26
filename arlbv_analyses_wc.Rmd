@@ -35,6 +35,9 @@ library(tidybayes)
 library(lmerTest)
 library(sigmoid)
 library(abind)
+library(future)
+library(doFuture)
+library(foreach)
 ```
 
 Read in data, run through QC
@@ -728,7 +731,7 @@ For each simulated dataset, we estimate the effects of Q and A on choice, using 
 efficiently approximates the model reported in the manuscript
 ```{r}
 # Get necessary data
-trials_bqba_sim <- trials %>% select(sub_index,block,overall_trial_nl,chosen_frac,unchosen_frac,fA_ix,fB_ix,rat_number)
+trials_bqba_sim <- trials %>% select(sub_index,block,overall_trial_nl,fA_ix,fB_ix,rat_number,show_fres,out,box_val)
 
 # Add parameter means needed for approximate data analysis
 trials_bqba_sim <- add_param_means(aff_only_s3$sum,"lrn_fr",trials_bqba_sim)
@@ -740,22 +743,33 @@ trials_bqba_sim <- add_param_means(aff_only_s3$sum,"lrn_c",trials_bqba_sim)
 # Get simulated data
 sim_choice <- get_draws(model="aff_only_s3",vars=c("sim_choice"),model_out_dir=model_out_dir)
 sim_rat <- get_draws("aff_only_s3",vars=c("sim_rat"),model_out_dir=model_out_dir)
+sim_prat <- get_draws("aff_only_s3",vars=c("sim_prat"),model_out_dir=model_out_dir)
+
+
+plan(multisession, workers = 12)
+registerDoFuture()
+
+result <- foreach(i = 1:24, .combine = 'c') %dopar% {
+  # Each iteration returns a list
+  list(list(one = i, two = i^2))
+}
+
 
 # Estimate effects of Q and A on choice for each simulated dataset
-sim_bQ <- c()
-sim_bA <- c()
 # Loop through every posterior draw
 for(i in 1:dim(sim_rat)[1]){
   for(c in 1:dim(sim_rat)[2]){
     # Add simulated choices and ratings to the data
     sim_trials <- trials_bqba_sim %>% 
                     mutate(choice=as.vector(sim_choice[i,c,])) %>%
+                    mutate(prat=as.vector(sim_prat[i,c,])) %>%
                     left_join(data.frame(valrat_z = as.vector(sim_rat[i,c,]),rat_number = 1:dim(sim_rat)[3]),
-                              by="rat_number") 
+                              by="rat_number") %>%
+                    mutate(chosen_frac = ifelse(choice == 1,fA_ix,fB_ix)) %>%
+                    mutate(unchosen_frac = ifelse(choice == 1,fB_ix,fA_ix))
     # Get estimated effects of Q and A on choice
     est_eff <- est_bq_ba(sim_trials)
-    sim_bQ <- c(sim_bQ,est_eff$bQ)
-    sim_bA <- c(sim_bA,est_eff$bA)
+    list(est_eff)
   }
 }
 ```
