@@ -388,7 +388,7 @@ generated quantities{
   
   
   // Simulate data
-  vector[n_s*n_t] sim_choice;
+  array[n_s*n_t] int sim_choice;
   vector[n_rat] sim_rat;
   vector[n_s*n_t] sim_prat;
   {
@@ -432,6 +432,12 @@ generated quantities{
     real nuis; //the nuisance variation in valence for the current trial
     real resid; //affect residual on the current trial
     
+    // Chosen and unchosen fractals on the current trial
+    int ch_frac;
+    int unch_frac;
+    
+    real ch_lik;
+    
     real curr_prat; // Current previous rating
     
     vector[2] softmax_arg;
@@ -457,18 +463,29 @@ generated quantities{
                       csens[s]*C[s,t,{fA[s,t],fB[s,t]}] + [ls_bias[s],0]'; //set argument for softmax decision function
                       
         sim_choice[(s-1)*n_t+t] = categorical_logit_rng(softmax_arg); 
+        ch_lik = categorical_logit_lpmf(sim_choice[(s-1)*n_t+t] | softmax_arg);
         
-        sim_prat[(s-1)*n_t+t] = curr_prat;
+        // Set the chosen and unchosen fractal for this trial
+        if(sim_choice[(s-1)*n_t+t] == 1){
+          ch_frac = fA[s,t];
+          unch_frac = fB[s,t];
+        } else{
+          ch_frac = fB[s,t];
+          unch_frac = fA[s,t];
+        }
+        
+        
+        sim_prat[(s-1)*n_t+t] = curr_prat; // set the previous rating for the current trial
         
         //Generate valence rating prediction
         if(fres[s,t] == 1){
           //if the fractal result was received...
-          curr_pred = B_0[s] + B_rew_fr[s]*rew[s,t] + B_bv_fr[s]*bv[s,t] + B_q_fr[s]*Q_fr[s,t,chosen_frac[s,t]] +
-                      B_pwqd_fr[s]*(Q_fr[s,t,chosen_frac[s,t]]*exp(choice_lik[(s-1)*n_t+t]) + Q_fr[s,t,unchosen_frac[s,t]]*(1-exp(choice_lik[(s-1)*n_t+t])));
+          curr_pred = B_0[s] + B_rew_fr[s]*rew[s,t] + B_bv_fr[s]*bv[s,t] + B_q_fr[s]*Q_fr[s,t,ch_frac] +
+                      B_pwqd_fr[s]*(Q_fr[s,t,ch_frac]*exp(ch_lik) + Q_fr[s,t,unch_frac]*(1-exp(ch_lik)));
         } else if (fres[s,t] == 0){
           //if not...
-          curr_pred = B_0[s] + B_rew_nf[s]*rew[s,t] + B_q_nf[s]*Q_fr[s,t,chosen_frac[s,t]] + 
-                      B_pwqd_nf[s]*(Q_fr[s,t,chosen_frac[s,t]]*exp(choice_lik[(s-1)*n_t+t]) + Q_fr[s,t,unchosen_frac[s,t]]*(1-exp(choice_lik[(s-1)*n_t+t])));
+          curr_pred = B_0[s] + B_rew_nf[s]*rew[s,t] + B_q_nf[s]*Q_fr[s,t,ch_frac] + 
+                      B_pwqd_nf[s]*(Q_fr[s,t,ch_frac]*exp(ch_lik) + Q_fr[s,t,unch_frac]*(1-exp(ch_lik)));
         }
         nuis = B_auto[s]*curr_prat;
         
@@ -508,7 +525,7 @@ generated quantities{
               A_nf[s,t+1,fA[s,t]] = A_nf[s,t,fA[s,t]] + lrn_nf[s]*(curr_pred - A_nf[s,t,fA[s,t]]);
               R_nf[s,t+1,fA[s,t]] = R_nf[s,t,fA[s,t]] + lrn_nf[s]*(resid - R_nf[s,t,fA[s,t]]);
             }
-          } else if(sim_choice[(s-1)*n_t+t]){
+          } else if(sim_choice[(s-1)*n_t+t] == 2){
             // vice-versa if fB was chosen...
             choice_a = 0;
             choice_b = 1;

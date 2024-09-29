@@ -1,4 +1,5 @@
-est_bq_ba <- function(data){
+# Estimates effects of Q and A on choice using an approximate data analysis method
+est_bq_ba_s3 <- function(data){
   # Get Q_fr values
   data_list <- by(data,data$sub_index, add_assoc, cue_cols = "chosen_frac", out_cols = "out", update_col = "show_fres", 
                   num_assoc = 6, assoc_name = "q_fr", lrn_rate = "lrn_fr", for_rate = "dcy_fr")

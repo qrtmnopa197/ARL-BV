@@ -745,19 +745,17 @@ sim_choice <- get_draws(model="aff_only_s3",vars=c("sim_choice"),model_out_dir=m
 sim_rat <- get_draws("aff_only_s3",vars=c("sim_rat"),model_out_dir=model_out_dir)
 sim_prat <- get_draws("aff_only_s3",vars=c("sim_prat"),model_out_dir=model_out_dir)
 
-
-
-plan(multisession, workers = 12)
+plan(multisession, workers = 10)
 registerDoFuture()
 
 sim_effs <- data.frame("bQs"=c(),"bAs"=c())
-for(chunk in 1:2){
-  # Divide the simulations into 8 chunks, to avoid taxing memory
-  iters <- ((chunk-1)*12+1):(chunk*12)
+for(chunk in 1:8){
+  # Divide the simulations into 8 chunks, to avoid overtaxing memory
+  iters <- ((chunk-1)*125+1):(chunk*125)
   sim_choice_chunk <- sim_choice[iters,,]
   sim_prat_chunk <- sim_prat[iters,,]
   sim_rat_chunk <- sim_rat[iters,,]
-  chunk_effs <- foreach(i = 1:12, .combine = rbind) %dopar% {
+  chunk_effs <- foreach(i = 1:125, .combine = rbind) %dopar% {
     iter_effs <- data.frame(matrix(0,ncol=2,nrow=4))
     colnames(iter_effs) <- c("bQs","bAs")
     for(c in 1:4){
@@ -770,7 +768,7 @@ for(chunk in 1:2){
                       mutate(chosen_frac = ifelse(choice == 1,fA_ix,fB_ix)) %>%
                       mutate(unchosen_frac = ifelse(choice == 1,fB_ix,fA_ix))
       # Get estimated effects of Q and A on choice
-      est_eff <- est_bq_ba(sim_trials)
+      est_eff <- est_bq_ba_s3(sim_trials)
       iter_effs$bQs[c] <- est_eff$bQ
       iter_effs$bAs[c] <- est_eff$bA
     }
@@ -778,16 +776,33 @@ for(chunk in 1:2){
   }
   sim_effs <- rbind(sim_effs,chunk_effs)
 }
+save(sim_effs,file=paste0(path_to_project_directory,"output/s3_aff_only_sim_effs.Rdata"))
 ```
-
 
 Next, we run these same approximate analyses on the real data
 ```{r}
+# Get necessary data
+trials_bqba_real <- trials %>% select(sub_index,block,overall_trial_nl,fA_ix,fB_ix,rat_number,show_fres,
+                                      out,box_val,choice_numeric,valrat_z,prev_rate,chosen_frac,unchosen_frac) %>%
+                               rename(prat = prev_rate, choice = choice_numeric)
 
+final_ls <- read_fsml("final_ls",model_out_dir=model_out_dir)
+# Add parameter means needed for approximate data analysis
+trials_bqba_real <- add_param_means(final_ls$sum,"lrn_fr",trials_bqba_real)
+trials_bqba_real <- add_param_means(final_ls$sum,"lrn_nf",trials_bqba_real)
+trials_bqba_real <- add_param_means(final_ls$sum,"dcy_fr",trials_bqba_real)
+trials_bqba_real <- add_param_means(final_ls$sum,"dcy_nf",trials_bqba_real)
+trials_bqba_real <- add_param_means(final_ls$sum,"lrn_c",trials_bqba_real)
+
+real_effs <- est_bq_ba_s3(trials_bqba_real)
+save(real_effs,file=paste0(path_to_project_directory,"output/s3_aff_only_real_effs.Rdata"))
 ```
 
 Finally, we plot the simulated and actual effects for comparison
 ```{r}
-
+ggplot(sim_effs, aes(x = bQs)) +
+  geom_histogram(fill = "steelblue", color = "black") +  # Adjust binwidth as needed
+  geom_vline(xintercept = 0, color = "black", size = 1) +  # Black vertical line at 0
+  geom_vline(xintercept = real_effs$bQ, color = "red", size = 1)
 ```
 
