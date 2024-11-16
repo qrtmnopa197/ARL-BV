@@ -8,22 +8,29 @@ est_bq_ba_s3 <- function(data){
     data$q_fr_ch[r] <- data[r,paste0("q_fr_",data$chosen_frac[r])]
     data$q_fr_unch[r] <- data[r,paste0("q_fr_",data$unchosen_frac[r])]
   }
-  # Estimate affect on each trial
-  data_fres <- filter(data,show_fres==1)
-  data_nofres <- filter(data,show_fres==0)
-  fres_fit <- lm(valrat_z ~ out + box_val + q_fr_ch + q_fr_unch + prat, data_fres)
-  nofres_fit <- lm(valrat_z ~ out + q_fr_ch + q_fr_unch + prat, data_nofres)
-  data <- data %>% 
-            mutate(mod_val = ifelse(
-                              show_fres == 1,
-                              fres_fit$coefficients[1] + fres_fit$coefficients[2]*out +
-                                fres_fit$coefficients[3]*box_val + fres_fit$coefficients[4]*q_fr_ch +
-                                fres_fit$coefficients[5]*q_fr_unch,
-                              nofres_fit$coefficients[1] + nofres_fit$coefficients[2]*out +
-                                nofres_fit$coefficients[3]*q_fr_ch + nofres_fit$coefficients[4]*q_fr_unch
-                              )
-            ) %>%
-            mutate(resid = ifelse(is.na(valrat_z),0,valrat_z - mod_val))
+
+  data_list <- list()
+  for(s in 1:max(data$sub_index)){
+    sub_data <- filter(data,sub_index == s)
+    sub_data_fres <- filter(sub_data,show_fres==1)
+    sub_data_nofres <- filter(sub_data,show_fres==0)
+    fres_fit <- lm(valrat_z ~ out + box_val + q_fr_ch + q_fr_unch + prat, sub_data_fres)
+    nofres_fit <- lm(valrat_z ~ out + q_fr_ch + q_fr_unch + prat, sub_data_nofres)
+    sub_data <- sub_data %>% 
+      mutate(mod_val = ifelse(
+        show_fres == 1,
+        fres_fit$coefficients[1] + fres_fit$coefficients[2]*out +
+          fres_fit$coefficients[3]*box_val + fres_fit$coefficients[4]*q_fr_ch +
+          fres_fit$coefficients[5]*q_fr_unch,
+        nofres_fit$coefficients[1] + nofres_fit$coefficients[2]*out +
+          nofres_fit$coefficients[3]*q_fr_ch + nofres_fit$coefficients[4]*q_fr_unch
+      )
+      ) %>%
+      mutate(resid = ifelse(is.na(valrat_z),0,valrat_z - mod_val))
+    data_list[[s]] <- sub_data
+  }
+  data <- do.call(rbind,data_list)
+
           
   # Get remaining associations used to predict choice
   data <- data %>%
@@ -82,6 +89,10 @@ est_bq_ba_s3 <- function(data){
   list("bQ"=choice_fit$coefficients[2],"bA"=choice_fit$coefficients[3])
 }
 
+# Adds a column to a trial-level dataset with the estimated affective impact of the cue outcome on that trial
+add_aff_imp <- function(){
+
+}
 
 # Adds columns to a data frame with values of cue associations (e.g., reward associations, affect associations)
 # on each trial
