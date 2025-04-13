@@ -712,9 +712,9 @@ variable_intervals<- create_interval_plot(arr = vec_ws_norm_org,names = c("resid
 #ggsave(paste0(fig_dir,"vec_lens_s3.pdf"),variable_intervals,width=1.8,height=1.35)
 ```
 
-# Testing for spurious positive effects of reward associations
-Here, we consider whether the observed effect of reward associations on choice could be due to its collinearity
-with affect assocations.
+# Verifying that reward associations have a positive effect on choice
+Here, we consider whether the observed effect of reward associations on choice could be due to noise in our
+estimates of affect.
 
 First, we fit a model and simulate data in which only affect associations influence choice
 ```{r}

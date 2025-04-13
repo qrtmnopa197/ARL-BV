@@ -227,7 +227,7 @@ atcheck_review <- function(sub_path,date_min="1000-05-13_19h21.26.622",date_max 
   # Print the result
   cat("Reject:\n")
   cat(paste(reject_df$id, collapse = "\n"))
-  cat("Approve:\n")
+  cat("\nApprove:\n")
   cat(paste(approve_df$id, collapse = "\n"))
   
   return(list(approve_ids = approve_df$id,reject_ids = reject_df$id))

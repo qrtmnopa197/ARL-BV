@@ -1,6 +1,4 @@
-// Q-learning model in which Q values are updated by both reward and valence
-// Two Qs: one for trials on which the fractal result is received, and one for trials on which it's not
-// In this model, valence is broken down into a model-predicted valence and a residual, with separate effects for each
+// RL model that assumes only affect associations influence choices
 
 data {
   int<lower=1> n_t; // number of trials
@@ -493,7 +491,7 @@ generated quantities{
         
         if(rat_num[s,t] != 0){
           //if the participant made a valence rating... 
-          sim_rat[rat_num[s,t]] = normal_rng(curr_pred + nuis,resid_sigma); //add to the vector of predicted ratings
+          sim_rat[rat_num[s,t]] = normal_rng(curr_pred + nuis,resid_sigma); 
           resid = sim_rat[rat_num[s,t]] - (curr_pred + nuis);
           curr_prat = sim_rat[rat_num[s,t]];
         } else{
