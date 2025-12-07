@@ -38,6 +38,7 @@ library(abind)
 library(future)
 library(doFuture)
 library(foreach)
+library(posterior)
 ```
 
 Read in data, run through QC
@@ -430,6 +431,22 @@ scd_rew_fr_sens_mu <- get_draws("final_ls",vars=c("scd_rew_fr_sens_mu"),model_ou
 quantile(scd_aff_fr_sens_mu-scd_rew_fr_sens_mu,c(.025,.5,.975))
 mean(scd_aff_fr_sens_mu > scd_rew_fr_sens_mu)
 ```
+
+
+Creating interval plot
+```{r}
+bq_ba_array <- abind(scd_rew_fr_sens_mu,scd_aff_fr_sens_mu,along=3)
+bq_bq_intervals <- create_interval_plot(arr = bq_ba_array,names = c("scd_rew_fr_sens_mu","scd_aff_fr_sens_mu"),
+                                          xmin = -.012,xmax = .65, percentiles = c(.05,.25,.50,.75,.95)) +
+                        theme(panel.grid.major.x = element_line(color = "#DCDCDC", size = .47),
+                              panel.background = element_rect(fill = "white", color = NA),
+                              axis.text.x = element_blank(),
+                              axis.text.y=element_blank()) 
+                        
+bq_bq_intervals
+ggsave("/Users/dp/Documents/conferences/SASolina_2025/figures/bq_bq_intervals_s3.pdf",bq_bq_intervals,width=2,height=1)
+```
+
 
 I think you redid some of the stats but didn't put them in the markdown. Oh well. These analyses are in the
 manuscript repo, at least.
@@ -834,4 +851,72 @@ ba_sims <- ggplot(sim_effs, aes(x = bAs)) +
                         axis.ticks.y = element_blank(),
                         axis.text.y = element_blank())
 ggsave("/Users/dp/Documents/manuscripts/vrv/figures_tables/supp_fig_2b_s3.pdf",ba_sims,width=2,height=1.33)
+```
+
+
+# Fitting model with just q-learning
+
+```{r}
+q_only <- fit_stan_model(stan_file=paste0(stan_model_dir,"q_only.stan"),
+                                   model_out_dir=model_out_dir,
+                                   raw_data=trials,
+                                   study = "arlbv",
+                                   n_t = 144,
+                                   skip=c("check_csvs","loo"))
+```
+
+```{r}
+scd_rew_fr_sens_mu_q_only <- get_draws("q_only",model_out_dir=model_out_dir,vars=c("scd_rew_fr_sens_mu"))
+get_ci_pd(draws = scd_rew_fr_sens_mu_q_only)
+```
+```{r}
+lrn_fr_mu_q_only <- get_draws("q_only",model_out_dir=model_out_dir,vars=c("lrn_fr_mu"))
+get_ci_pd(draws = sigmoid(lrn_fr_mu_q_only))
+```
+# Compare learning rates across studies
+Study 3 learning rate
+```{r}
+lrn_s3 <- sigmoid(get_draws("final_ls",vars=c("lrn_fr_mu")))
+lrn_s2 <- sigmoid(get_draws("model_pred_arl_nonuis",vars=c("alpha_mu"),model_out_dir="/Users/dp/projects/s22_follow_up/output/results/stan_model_fits/"))
+lrn_s1 <- sigmoid(get_draws("arl",vars=c("alpha_mu"),model_out_dir="~/projects/spring_2022_study/output/results/stan_model_fits/final_models/"))
+quantile(lrn_s3,c(.025,.50,.975))
+get_ci_pd(draws=lrn_s3[1:1500,,]-lrn_s2) # pare down the lrn_s3 posterior to make it comparable to the lrn_s2 and lrn_s1 posteriors
+get_ci_pd(draws=lrn_s3[1:1500,,]-lrn_s1)
+```
+
+
+
+# Outputting bq(Q_a-Q_b) + bq(A_a-A_b)
+Refit the main model, outputting bq(Q_a-Q_b) + ba(A_a-A_b) for each trial
+```{r}
+arlbv_qa_term_out <- fit_stan_model(stan_file=paste0(stan_model_dir,"arlbv_qa_term_out.stan"),
+                                   model_out_dir=model_out_dir,
+                                   raw_data=trials,
+                                   study = "arlbv",
+                                   n_t = 144)
+```
+
+
+```{r}
+q_a_term_draws <- get_draws("arlbv_qa_term_out",vars=c("q_a_term"))
+q_a_term_abs <- q_a_term_draws^2
+s_s3 <- apply(q_a_term_abs,c(1,2),mean)
+quantile(s_s3,c(.025,.50,.975))
+```
+
+Now compare this to the same variable for studies 1 and 2
+```{r}
+q_a_term_draws_s1 <- get_draws("arl_qa_term_out",vars=c("q_a_term"), model_out_dir = "~/projects/spring_2022_study/output/results/stan_model_fits/final_models/")
+q_a_term_abs_s1 <- q_a_term_draws_s1^2
+s_s1 <- apply(q_a_term_abs_s1,c(1,2),mean)
+quantile(s_s1,c(.025,.50,.975))
+get_ci_pd(draws=s_s3-s_s1)
+```
+
+```{r}
+q_a_term_draws_s2 <- get_draws("s22fu_qa_term_out",vars=c("q_a_term"),model_out_dir="/Users/dp/projects/s22_follow_up/output/results/stan_model_fits/")
+q_a_term_abs_s2 <- q_a_term_draws_s2^3
+s_s2 <- apply(q_a_term_abs_s2,c(1,2),mean)
+quantile(s_s2,c(.025,.50,.975))
+get_ci_pd(draws=s_s3-s_s2)
 ```
