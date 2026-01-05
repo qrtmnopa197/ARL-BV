@@ -869,10 +869,12 @@ q_only <- fit_stan_model(stan_file=paste0(stan_model_dir,"q_only.stan"),
 scd_rew_fr_sens_mu_q_only <- get_draws("q_only",model_out_dir=model_out_dir,vars=c("scd_rew_fr_sens_mu"))
 get_ci_pd(draws = scd_rew_fr_sens_mu_q_only)
 ```
+
 ```{r}
 lrn_fr_mu_q_only <- get_draws("q_only",model_out_dir=model_out_dir,vars=c("lrn_fr_mu"))
 get_ci_pd(draws = sigmoid(lrn_fr_mu_q_only))
 ```
+
 # Compare learning rates across studies
 Study 3 learning rate
 ```{r}
@@ -919,4 +921,32 @@ q_a_term_abs_s2 <- q_a_term_draws_s2^3
 s_s2 <- apply(q_a_term_abs_s2,c(1,2),mean)
 quantile(s_s2,c(.025,.50,.975))
 get_ci_pd(draws=s_s3-s_s2)
+```
+
+# Calculating correlations between reward and box values, valence rating residuals
+```{r}
+rat_pred <- get_draws("final_ls",model_out_dir=model_out_dir,vars=("rat_pred"))
+trials_rat <- filter(trials,!is.na(val_rat))
+fres_trials <- which(trials_rat$show_fres == 1)
+fres_rat_pred <- rat_pred[,,fres_trials]
+trials_rat_fres <- filter(trials_rat,show_fres == 1)
+res_rew_cor <- apply(fres_rat_pred,c(1,2),function(x) cor(trials_rat_fres$valrat_z-x,trials_rat_fres$out))
+get_ci_pd(draws = res_rew_cor,round = 100)
+```
+
+# Assessing effect of box value associations on choice
+```{r}
+final_ls_m_val <- fit_stan_model(stan_file=paste0(stan_model_dir,"final_ls_m_val.stan"),
+                                   model_out_dir=model_out_dir,
+                                   raw_data=trials,
+                                   study = "arlbv",
+                                   n_t = 144,
+                                   iter_sampling = 2000,
+                                   skip=c("check_csvs","loo"))
+```
+
+```{r}
+final_ls_m_val$diagnostics
+beta_m <- get_draws("final_ls_m_val",vars=c("scd_box_fr_sens_mu"),model_out_dir=model_out_dir)
+get_ci_pd(draws=beta_m)
 ```
