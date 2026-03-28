@@ -950,3 +950,34 @@ final_ls_m_val$diagnostics
 beta_m <- get_draws("final_ls_m_val",vars=c("scd_box_fr_sens_mu"),model_out_dir=model_out_dir)
 get_ci_pd(draws=beta_m)
 ```
+
+# No-autocorrelation model variant
+
+Fit no-choice-autocorrelation version of the main choice model.
+```{r}
+final_ls_nocac <- fit_stan_model(stan_file=paste0(stan_model_dir,"final_ls_nocac.stan"),
+                                   model_out_dir=model_out_dir,
+                                   raw_data=trials,
+                                   study = "arlbv",
+                                   n_t = 144)
+```
+
+Assess effects of Q and A on choice from the no-autocorrelation posterior.
+```{r}
+scd_rew_fr_sens_mu_nocac <- get_draws("final_ls_nocac",vars=c("scd_rew_fr_sens_mu"),model_out_dir=model_out_dir)
+scd_aff_fr_sens_mu_nocac <- get_draws("final_ls_nocac",vars=c("scd_aff_fr_sens_mu"),model_out_dir=model_out_dir)
+scd_rew_nf_sens_mu_nocac <- get_draws("final_ls_nocac",vars=c("scd_rew_nf_sens_mu"),model_out_dir=model_out_dir)
+scd_aff_nf_sens_mu_nocac <- get_draws("final_ls_nocac",vars=c("scd_aff_nf_sens_mu"),model_out_dir=model_out_dir)
+
+cat("Fractal-result trials: reward vs affect\n")
+quantile(scd_rew_fr_sens_mu_nocac,c(.025,.5,.975))
+quantile(scd_aff_fr_sens_mu_nocac,c(.025,.5,.975))
+quantile(scd_rew_fr_sens_mu_nocac - scd_aff_fr_sens_mu_nocac,c(.025,.5,.975))
+mean(scd_rew_fr_sens_mu_nocac > scd_aff_fr_sens_mu_nocac)
+
+cat("\nNo-fractal-result trials: reward vs affect\n")
+quantile(scd_rew_nf_sens_mu_nocac,c(.025,.5,.975))
+quantile(scd_aff_nf_sens_mu_nocac,c(.025,.5,.975))
+quantile(scd_rew_nf_sens_mu_nocac - scd_aff_nf_sens_mu_nocac,c(.025,.5,.975))
+mean(scd_rew_nf_sens_mu_nocac > scd_aff_nf_sens_mu_nocac)
+```
