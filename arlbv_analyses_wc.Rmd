@@ -966,18 +966,7 @@ Assess effects of Q and A on choice from the no-autocorrelation posterior.
 ```{r}
 scd_rew_fr_sens_mu_nocac <- get_draws("final_ls_nocac",vars=c("scd_rew_fr_sens_mu"),model_out_dir=model_out_dir)
 scd_aff_fr_sens_mu_nocac <- get_draws("final_ls_nocac",vars=c("scd_aff_fr_sens_mu"),model_out_dir=model_out_dir)
-scd_rew_nf_sens_mu_nocac <- get_draws("final_ls_nocac",vars=c("scd_rew_nf_sens_mu"),model_out_dir=model_out_dir)
-scd_aff_nf_sens_mu_nocac <- get_draws("final_ls_nocac",vars=c("scd_aff_nf_sens_mu"),model_out_dir=model_out_dir)
 
-cat("Fractal-result trials: reward vs affect\n")
-quantile(scd_rew_fr_sens_mu_nocac,c(.025,.5,.975))
-quantile(scd_aff_fr_sens_mu_nocac,c(.025,.5,.975))
-quantile(scd_rew_fr_sens_mu_nocac - scd_aff_fr_sens_mu_nocac,c(.025,.5,.975))
-mean(scd_rew_fr_sens_mu_nocac > scd_aff_fr_sens_mu_nocac)
-
-cat("\nNo-fractal-result trials: reward vs affect\n")
-quantile(scd_rew_nf_sens_mu_nocac,c(.025,.5,.975))
-quantile(scd_aff_nf_sens_mu_nocac,c(.025,.5,.975))
-quantile(scd_rew_nf_sens_mu_nocac - scd_aff_nf_sens_mu_nocac,c(.025,.5,.975))
-mean(scd_rew_nf_sens_mu_nocac > scd_aff_nf_sens_mu_nocac)
+get_ci_pd(draws = scd_rew_fr_sens_mu_nocac)
+get_ci_pd(draws = scd_aff_fr_sens_mu_nocac)
 ```
