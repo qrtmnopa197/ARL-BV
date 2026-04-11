@@ -148,9 +148,35 @@ one_q <- fit_stan_model(stan_file=paste0(stan_model_dir,"one_q.stan"),
                                    n_t = 144)
 ```
 
+Fit no-choice-autocorrelation version of one_q
+```{r}
+one_q_nocac <- fit_stan_model(stan_file=paste0(stan_model_dir,"one_q_nocac.stan"),
+                                   model_out_dir=model_out_dir,
+                                   raw_data=trials,
+                                   study = "arlbv",
+                                   n_t = 144)
+```
+
 Check diagnostics
 ```{r}
 one_q$diagnostics
+one_q_nocac$diagnostics
+```
+
+
+```{r}
+one_q <- read_fsml("one_q",model_out_dir = model_out_dir)
+fsml_compare(one_q,one_q_nocac)
+```
+Autocorrelation clearly helps
+
+Predict choice with Q, A, S, B, and V.
+```{r}
+two_q <- fit_stan_model(stan_file=paste0(stan_model_dir,"two_q.stan"),
+                                   model_out_dir=model_out_dir,
+                                   raw_data=trials,
+                                   study = "s3",
+                                   n_t = 144)
 ```
 
 ```{r}
@@ -181,7 +207,6 @@ sigmoid(filt_sum(two_q$sum,"lrn_fr_mu")$median)
 sigmoid(filt_sum(two_q$sum,"lrn_nf_mu")$median)
 (sigmoid(twoq_lrn_dc_draws[,,"lrn_fr_mu"]) - sigmoid(twoq_lrn_dc_draws[,,"lrn_nf_mu"])) > 0
 ```
-
 Indeed, the learning rate is higher for fres than no-fres trials, as predicted.
 
 Fit winner with side bias
@@ -966,7 +991,68 @@ Assess effects of Q and A on choice from the no-autocorrelation posterior.
 ```{r}
 scd_rew_fr_sens_mu_nocac <- get_draws("final_ls_nocac",vars=c("scd_rew_fr_sens_mu"),model_out_dir=model_out_dir)
 scd_aff_fr_sens_mu_nocac <- get_draws("final_ls_nocac",vars=c("scd_aff_fr_sens_mu"),model_out_dir=model_out_dir)
+scd_aff_fr_sens_mu_nocac <- get_draws("final_ls_nocac",vars=c("scd_resid_fr_sens_mu_nocac"),model_out_dir=model_out_dir)
 
 get_ci_pd(draws = scd_rew_fr_sens_mu_nocac)
 get_ci_pd(draws = scd_aff_fr_sens_mu_nocac)
+get_ci_pd(draws = scd_aff_fr_sens_mu_nocac - scd_rew_fr_sens_mu_nocac)
+```
+
+# Parameter recovery for Study 3 choice effects
+Simulate and recover `B_Q` (`rew_fr_sens_mu`), `B_A` (`aff_fr_sens_mu`), and `B_R` (`resid_fr_sens_mu`)
+from the fitted Study 3 choice model.
+```{r, eval=FALSE}
+# Select which fitted model summary to use as the simulation anchor.
+choice_model_name <- "final_ls"
+choice_model_sum <- read_fsml(choice_model_name, model_out_dir = model_out_dir)$sum
+
+# Run the full Study 3 simulation + recovery pipeline.
+s3_choice_recovery <- run_s3_choice_param_recovery(
+  trials = trials,
+  sum_df = choice_model_sum,
+  n_sims = 250,
+  seed = 19
+)
+
+rec_dir <- paste0(path_to_project_directory, "output/recovery/")
+if (!dir.exists(rec_dir)) {
+  dir.create(rec_dir, recursive = TRUE)
+}
+
+# Create timestamped output filenames to avoid overwriting prior runs.
+timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
+estimates_file <- paste0(rec_dir, "s3_choice_param_recovery_estimates_", timestamp, ".csv")
+fail_file <- paste0(rec_dir, "s3_choice_param_recovery_fail_summary_", timestamp, ".csv")
+plot_file <- paste0(rec_dir, "s3_choice_param_recovery_panel_", timestamp, ".pdf")
+
+# Save row-level estimates and failure summaries for reproducibility.
+write.csv(s3_choice_recovery$estimates, estimates_file, row.names = FALSE)
+write.csv(s3_choice_recovery$fail_summary, fail_file, row.names = FALSE)
+
+# Build and save the faceted true-vs-recovered panel.
+s3_choice_recovery_plot <- plot_s3_choice_param_recovery(
+  estimates_df = s3_choice_recovery$estimates,
+  point_alpha = 0.35,
+  point_size = 1.35
+)
+ggsave(plot_file, s3_choice_recovery_plot, width = 5.31, height = 2)
+
+s3_choice_recovery$fail_summary
+```
+
+Rebuild the recovery panel directly from a saved estimates CSV.
+```{r, eval=FALSE}
+# Recreate the panel from a previously saved estimates file (no re-simulation required).
+replot_s3 <- build_s3_choice_param_recovery_plot_from_file(
+  estimates_file = paste0(rec_dir, "s3_choice_param_recovery_estimates_YYYYMMDD_HHMMSS.csv"),
+  point_alpha = 0.35,
+  point_size = 1.35
+)
+
+ggsave(
+  filename = paste0(rec_dir, "s3_choice_param_recovery_panel_replot.pdf"),
+  plot = replot_s3$panel_plot,
+  width = 5.31,
+  height = 2
+)
 ```
