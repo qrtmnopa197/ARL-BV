@@ -604,19 +604,13 @@ quantile(aff_twoq_side,c(.50,.025,.975))
 round(mean(aff_twoq_side > 0) * 100,1)
 ```
 
-# Regressing valence and reward onto choice
+# Model-free stay regression
 
-Do a model-free test of whether valence and reward both predict choice
+This regression estimates whether feedback-trial cue outcomes and box values predict staying with the chosen cue
+the next time that cue pair appears.
 ```{r}
-trials_fres <- filter(trials,show_fres == 1)
-trials_fres_scale <- trials_fres %>% mutate(valrat_z=scale(valrat_z),out=scale(out))
-stay_fit <- lmer(stay ~ valrat_z + out + (valrat_z + out | sub_index),trials_fres_scale)
-summary(stay_fit)
-confint(stay_fit, parm = c("valrat_z","out"))
-```
-
-```{r}
-box_out_stay <- glm(
+trials_fres <- filter(trials, show_fres == 1)
+box_out_stay_glm <- glm(
   stay ~ scale(out) + scale(box_val) + factor(sub_index),
   data = trials_fres,
   family = binomial
@@ -625,94 +619,13 @@ summary(box_out_stay_glm)
 confint.default(box_out_stay_glm, parm = c("scale(out)", "scale(box_val)"))
 ```
 
-Do a quick model-free test of whether participants are more likely to choose the left-side cue when its most
-recent cue outcome, or the box amount present when that cue was most recently chosen, was better than the
-right-side cue's.
-```{r}
-# Add raw, last-choice predictors for the two cues shown on each trial.
-#
-# The function walks through one subject's trials in order. Before each choice, it stores the cue
-# outcome from the last time an outcome was received for the left and right cues, plus the box
-# amount present on those same prior feedback trials. The histories are pre-choice predictors:
-# the current trial updates the stored values only after its predictors have been recorded.
-add_last_chosen_cue_experience <- function(sub_trials) {
-  sub_trials <- sub_trials %>% arrange(block, trial_nl)
-  
-  # Initialize cue-specific histories. Each block uses a new cue pair, so histories reset at block starts.
-  n_frac <- max(c(sub_trials$fA_ix, sub_trials$fB_ix), na.rm = TRUE)
-  last_out <- rep(NA_real_, n_frac)
-  last_box <- rep(NA_real_, n_frac)
-  current_block <- NA_real_
-  
-  # Allocate trial-level columns that will be used in the choice regression.
-  sub_trials$last_out_fA <- NA_real_
-  sub_trials$last_out_fB <- NA_real_
-  sub_trials$last_box_fA <- NA_real_
-  sub_trials$last_box_fB <- NA_real_
-  
-  for(row in seq_len(nrow(sub_trials))) {
-    # Reset histories when a new block begins, because cue identities do not carry across blocks.
-    if(is.na(current_block) || sub_trials$block[row] != current_block) {
-      last_out <- rep(NA_real_, n_frac)
-      last_box <- rep(NA_real_, n_frac)
-      current_block <- sub_trials$block[row]
-    }
-    
-    # Store the left and right cues' histories before observing the current trial's outcome.
-    fA <- sub_trials$fA_ix[row]
-    fB <- sub_trials$fB_ix[row]
-    sub_trials$last_out_fA[row] <- last_out[fA]
-    sub_trials$last_out_fB[row] <- last_out[fB]
-    sub_trials$last_box_fA[row] <- last_box[fA]
-    sub_trials$last_box_fB[row] <- last_box[fB]
-    
-    # Update the chosen cue's history only when the cue outcome was observed. This keeps the
-    # outcome and box amount tied to the same most-recent feedback event for that cue.
-    chosen_frac <- sub_trials$chosen_frac[row]
-    if(!is.na(chosen_frac) && !is.na(sub_trials$show_fres[row]) && sub_trials$show_fres[row] == 1) {
-      last_out[chosen_frac] <- sub_trials$out[row]
-      last_box[chosen_frac] <- sub_trials$box_val[row]
-    }
-  }
-  
-  sub_trials
-}
-
-# Build the regression dataset from pre-choice history differences.
-choice_last_experience <- trials %>%
-  split(.$sub_index) %>%
-  lapply(add_last_chosen_cue_experience) %>%
-  bind_rows() %>%
-  mutate(choice_fA = ifelse(choice == "fA", 1, 0),
-         last_out_diff = last_out_fA - last_out_fB,
-         last_box_diff = last_box_fA - last_box_fB) %>%
-  filter(!is.na(last_out_diff), !is.na(last_box_diff))
-
-# Summarize the available trials before fitting, since early trials lack history for one or both cues.
-choice_last_experience %>%
-  summarize(n = n(),
-            prop_choose_fA = mean(choice_fA),
-            mean_last_out_diff = mean(last_out_diff),
-            mean_last_box_diff = mean(last_box_diff))
-
-# Test whether raw cue-outcome and box-amount histories predict left-side cue choices.
-last_experience_choice_fit <- glmer(
-  choice_fA ~ last_out_diff + last_box_diff + (last_out_diff + last_box_diff | sub_index),
-  data = choice_last_experience,
-  family = binomial,
-  control = glmerControl(optimizer = "bobyqa")
-)
-summary(last_experience_choice_fit)
-confint(last_experience_choice_fit, parm = c("last_out_diff","last_box_diff"), method = "Wald")
-```
-
 Closed-loop model amputation check: simulate choices from the `final_ls` posterior with and without the `A_fr`
 effect on choice. Simulated choices feed back into future reward, affect, residual, and choice-autocorrelation
-histories, and the same simulated paths are reused for the raw-history and Q/M choice plots.
+histories. The analysis asks whether the full and A-fr-amputated simulations reproduce the observed stay-regression effects of feedback-trial cue outcomes and box values.
 ```{r, eval=FALSE}
-# Set a small value for quick debugging; use ~500 for the manuscript version.
+# Set number of draws.
 if (!exists("s3_amp_n_draws")) {
-  s3_amp_n_draws <- 100
+  s3_amp_n_draws <- 250
 }
 if (!exists("s3_amp_seed")) {
   s3_amp_seed <- 19
@@ -730,7 +643,7 @@ if (!exists("s3_amp_timestamp")) {
 }
 s3_amp_closed_prefix <- paste0(s3_amp_dir, "s3_af_amputation_closed_loop_", s3_amp_n_draws, "draws_", s3_amp_timestamp)
 
-# Build the fixed trial scaffold and subject index used by all amputation analyses.
+# Build the fixed trial scaffold and subject index used by the amputation analysis.
 if (!exists("s3_amp_template")) {
   s3_amp_template <- s3_prepare_amputation_template(trials)
 }
@@ -781,7 +694,7 @@ if (!exists("s3_amp_closed_loop_stay")) {
   )
 }
 
-# Fit the same fast stay-effect GLM to observed data and each simulated draw/model.
+# Fit the same fast, stable stay-effect GLM to observed data and each simulated draw/model.
 s3_amp_observed_stay_effect <- s3_fit_stay_effect_glm(
   data = trials,
   stay_col = "stay",
@@ -795,7 +708,7 @@ s3_amp_sim_stay_effect_summary <- s3_stay_effect_sim_interval_summary(
   s3_amp_sim_stay_effect_draw_summary
 )
 
-# Save the coefficient summaries separately from the exploratory curve summaries below.
+# Save the coefficient summaries and final figure inputs.
 write.csv(s3_amp_observed_stay_effect, paste0(s3_amp_closed_prefix, "_observed_stay_effect_glm.csv"), row.names = FALSE)
 write.csv(s3_amp_sim_stay_effect_draw_summary, paste0(s3_amp_closed_prefix, "_sim_stay_effect_glm_draw_summary.csv"), row.names = FALSE)
 write.csv(s3_amp_sim_stay_effect_summary, paste0(s3_amp_closed_prefix, "_sim_stay_effect_glm_interval_summary.csv"), row.names = FALSE)
@@ -816,170 +729,7 @@ s3_amp_stay_effect_plot <- plot_s3_stay_effect_amputation(
   sim_summary = s3_amp_sim_stay_effect_summary
 )
 s3_amp_stay_effect_plot
-ggsave(paste0(s3_amp_closed_prefix, "_stay_effect_glm_amputation_plot.pdf"), s3_amp_stay_effect_plot, width = 5.3, height = 3.5)
-```
-
-Last outcome and last box amount choice curves.
-```{r, eval=FALSE}
-# Build observed and simulated summaries for the raw-history x-axes.
-if (!exists("s3_amp_observed_last_experience_choice")) {
-  s3_amp_observed_last_experience_choice <- s3_observed_last_experience_choice_summary(s3_amp_template)
-}
-s3_amp_last_experience_summary_set <- s3_summarize_closed_loop_last_experience(
-  closed_loop_sim = s3_amp_closed_loop_sim
-)
-
-# Summarize realized simulated choices by raw last-experience cue-outcome and box-amount histories.
-s3_amp_closed_choice_sim_draw_summary <- s3_amp_last_experience_summary_set$choice_sim_draw_summary
-s3_amp_closed_choice_sim_summary <- s3_choice_interval_summary(s3_amp_closed_choice_sim_draw_summary)
-s3_amp_closed_choice_sim_plot_summary <- bind_rows(
-  s3_amp_observed_last_experience_choice,
-  s3_amp_closed_choice_sim_summary
-)
-
-# Build the less noisy probability-scale version from the same closed-loop histories.
-s3_amp_closed_choice_pred_draw_summary <- s3_amp_last_experience_summary_set$choice_pred_draw_summary
-s3_amp_closed_choice_pred_summary <- s3_choice_interval_summary(s3_amp_closed_choice_pred_draw_summary)
-s3_amp_closed_choice_pred_plot_summary <- bind_rows(
-  s3_amp_observed_last_experience_choice,
-  s3_amp_closed_choice_pred_summary
-)
-
-# Save compact last-experience outputs separately from the Q/M analysis below.
-write.csv(s3_amp_observed_last_experience_choice, paste0(s3_amp_closed_prefix, "_observed_last_experience_choice_summary.csv"), row.names = FALSE)
-write.csv(s3_amp_closed_choice_sim_draw_summary, paste0(s3_amp_closed_prefix, "_last_experience_choice_sim_draw_summary.csv"), row.names = FALSE)
-write.csv(s3_amp_closed_choice_sim_summary, paste0(s3_amp_closed_prefix, "_last_experience_choice_sim_interval_summary.csv"), row.names = FALSE)
-write.csv(s3_amp_closed_choice_pred_draw_summary, paste0(s3_amp_closed_prefix, "_last_experience_choice_pred_draw_summary.csv"), row.names = FALSE)
-write.csv(s3_amp_closed_choice_pred_summary, paste0(s3_amp_closed_prefix, "_last_experience_choice_pred_interval_summary.csv"), row.names = FALSE)
-saveRDS(
-  list(
-    n_draws = s3_amp_n_draws,
-    seed = s3_amp_seed,
-    observed_last_experience_choice = s3_amp_observed_last_experience_choice,
-    choice_sim_draw_summary = s3_amp_closed_choice_sim_draw_summary,
-    choice_sim_summary = s3_amp_closed_choice_sim_summary,
-    choice_pred_draw_summary = s3_amp_closed_choice_pred_draw_summary,
-    choice_pred_summary = s3_amp_closed_choice_pred_summary
-  ),
-  paste0(s3_amp_closed_prefix, "_last_experience_summary_objects.rds")
-)
-
-# Plot closed-loop realized choices by last cue-outcome and box-amount history.
-s3_amp_closed_choice_sim_plot <- plot_s3_amputation_last_experience_choice(
-  summary_df = s3_amp_closed_choice_sim_plot_summary
-)
-s3_amp_closed_choice_sim_plot
-ggsave(paste0(s3_amp_closed_prefix, "_last_experience_choice_probability_plot.pdf"), s3_amp_closed_choice_sim_plot, width = 6.2, height = 3.3)
-
-# Plot closed-loop policy-implied p(choose left cue) by the same raw histories.
-s3_amp_closed_choice_pred_plot <- plot_s3_amputation_last_experience_choice(
-  summary_df = s3_amp_closed_choice_pred_plot_summary
-)
-s3_amp_closed_choice_pred_plot
-ggsave(paste0(s3_amp_closed_prefix, "_last_experience_predicted_choice_probability_plot.pdf"), s3_amp_closed_choice_pred_plot, width = 6.2, height = 3.3)
-```
-
-Posterior-median Q and M difference choice curves.
-```{r, eval=FALSE}
-# Reuse an already-read final_ls_m_val draws object whenever possible.
-if (!exists("s3_amp_mval_learning_draws")) {
-  if (exists("final_ls_m_val_learning_draws")) {
-    s3_amp_mval_learning_draws <- final_ls_m_val_learning_draws
-  } else if (exists("final_ls_m_val_draws")) {
-    s3_amp_mval_learning_draws <- final_ls_m_val_draws
-  } else {
-    s3_amp_mval_learning_draws <- get_draws(
-      model = "final_ls_m_val",
-      model_out_dir = model_out_dir,
-      vars = c("lrn_fr_mu", "lrn_fr_sigma", "lrn_fr_z", "dcy_fr_mu", "dcy_fr_sigma", "dcy_fr_z")
-    )
-  }
-}
-
-# Build and bin the posterior-median Q/M x-axis values once per workspace session.
-s3_amp_qm_n_bins <- 5
-s3_amp_qm_n_draws <- NULL
-if (!exists("s3_amp_mval_qm_predictors")) {
-  s3_amp_mval_qm_predictors <- s3_build_mval_qm_predictors(
-    trial_template = s3_amp_template,
-    mval_learning_draws = s3_amp_mval_learning_draws,
-    n_draws = s3_amp_qm_n_draws,
-    seed = s3_amp_seed
-  )
-}
-if (!exists("s3_amp_mval_qm_predictor_bins")) {
-  s3_amp_mval_qm_predictor_bins <- s3_bin_mval_qm_predictors(
-    qm_predictors = s3_amp_mval_qm_predictors,
-    n_bins = s3_amp_qm_n_bins
-  )
-}
-if (!exists("s3_amp_observed_qm_choice")) {
-  s3_amp_observed_qm_choice <- s3_observed_trial_predictor_choice_summary(
-    trial_template = s3_amp_template,
-    trial_predictor_bins = s3_amp_mval_qm_predictor_bins
-  )
-}
-
-# Summarize the same closed-loop simulation by posterior-median Q and M value differences.
-s3_amp_qm_summary_set <- s3_summarize_closed_loop_trial_predictors(
-  closed_loop_sim = s3_amp_closed_loop_sim,
-  trial_predictor_bins = s3_amp_mval_qm_predictor_bins
-)
-s3_amp_closed_qm_choice_sim_draw_summary <- s3_amp_qm_summary_set$trial_predictor_choice_sim_draw_summary
-s3_amp_closed_qm_choice_sim_summary <- s3_choice_interval_summary(s3_amp_closed_qm_choice_sim_draw_summary)
-s3_amp_closed_qm_choice_sim_plot_summary <- bind_rows(
-  s3_amp_observed_qm_choice,
-  s3_amp_closed_qm_choice_sim_summary
-)
-
-# Build the less noisy probability-scale version for the Q/M x-axis plot.
-s3_amp_closed_qm_choice_pred_draw_summary <- s3_amp_qm_summary_set$trial_predictor_choice_pred_draw_summary
-s3_amp_closed_qm_choice_pred_summary <- s3_choice_interval_summary(s3_amp_closed_qm_choice_pred_draw_summary)
-s3_amp_closed_qm_choice_pred_plot_summary <- bind_rows(
-  s3_amp_observed_qm_choice,
-  s3_amp_closed_qm_choice_pred_summary
-)
-
-# Save compact Q/M outputs separately from the raw-history analysis above.
-write.csv(s3_amp_mval_qm_predictors, paste0(s3_amp_closed_prefix, "_mval_qm_posterior_median_predictors.csv"), row.names = FALSE)
-write.csv(s3_amp_mval_qm_predictor_bins, paste0(s3_amp_closed_prefix, "_mval_qm_predictor_bins.csv"), row.names = FALSE)
-write.csv(s3_amp_observed_qm_choice, paste0(s3_amp_closed_prefix, "_observed_mval_qm_choice_summary.csv"), row.names = FALSE)
-write.csv(s3_amp_closed_qm_choice_sim_draw_summary, paste0(s3_amp_closed_prefix, "_mval_qm_choice_sim_draw_summary.csv"), row.names = FALSE)
-write.csv(s3_amp_closed_qm_choice_sim_summary, paste0(s3_amp_closed_prefix, "_mval_qm_choice_sim_interval_summary.csv"), row.names = FALSE)
-write.csv(s3_amp_closed_qm_choice_pred_draw_summary, paste0(s3_amp_closed_prefix, "_mval_qm_choice_pred_draw_summary.csv"), row.names = FALSE)
-write.csv(s3_amp_closed_qm_choice_pred_summary, paste0(s3_amp_closed_prefix, "_mval_qm_choice_pred_interval_summary.csv"), row.names = FALSE)
-saveRDS(
-  list(
-    n_draws = s3_amp_n_draws,
-    seed = s3_amp_seed,
-    mval_qm_predictors = s3_amp_mval_qm_predictors,
-    mval_qm_predictor_bins = s3_amp_mval_qm_predictor_bins,
-    observed_mval_qm_choice = s3_amp_observed_qm_choice,
-    mval_qm_choice_sim_draw_summary = s3_amp_closed_qm_choice_sim_draw_summary,
-    mval_qm_choice_sim_summary = s3_amp_closed_qm_choice_sim_summary,
-    mval_qm_choice_pred_draw_summary = s3_amp_closed_qm_choice_pred_draw_summary,
-    mval_qm_choice_pred_summary = s3_amp_closed_qm_choice_pred_summary
-  ),
-  paste0(s3_amp_closed_prefix, "_mval_qm_summary_objects.rds")
-)
-
-# Plot closed-loop realized choices by posterior-median Q and M value differences.
-s3_amp_closed_qm_choice_sim_plot <- plot_s3_amputation_last_experience_choice(
-  summary_df = s3_amp_closed_qm_choice_sim_plot_summary,
-  predictor_levels = c("Q value", "M value"),
-  x_label = "Posterior-median value difference (left cue - right cue)"
-)
-s3_amp_closed_qm_choice_sim_plot
-ggsave(paste0(s3_amp_closed_prefix, "_mval_qm_choice_probability_plot.pdf"), s3_amp_closed_qm_choice_sim_plot, width = 6.2, height = 3.3)
-
-# Plot closed-loop policy-implied p(choose left cue) by the same Q/M value differences.
-s3_amp_closed_qm_choice_pred_plot <- plot_s3_amputation_last_experience_choice(
-  summary_df = s3_amp_closed_qm_choice_pred_plot_summary,
-  predictor_levels = c("Q value", "M value"),
-  x_label = "Posterior-median value difference (left cue - right cue)"
-)
-s3_amp_closed_qm_choice_pred_plot
-ggsave(paste0(s3_amp_closed_prefix, "_mval_qm_predicted_choice_probability_plot.pdf"), s3_amp_closed_qm_choice_pred_plot, width = 6.2, height = 3.3)
+ggsave(paste0(s3_amp_closed_prefix, "_stay_effect_glm_amputation_plot.pdf"), s3_amp_stay_effect_plot, width = 2.5, height = 1.67)
 ```
 
 
