@@ -616,14 +616,13 @@ confint(stay_fit, parm = c("valrat_z","out"))
 ```
 
 ```{r}
-trials_fres <- filter(trials,show_fres==1)
-box_out_stay_fit <- glmer(
-  stay ~ scale(out) + scale(box_val) + (scale(out) + scale(box_val) | sub_index),
+box_out_stay <- glm(
+  stay ~ scale(out) + scale(box_val) + factor(sub_index),
   data = trials_fres,
-  family = binomial,
-  control = glmerControl(optimizer = "bobyqa")
+  family = binomial
 )
-summary(box_out_stay_fit)
+summary(box_out_stay_glm)
+confint.default(box_out_stay_glm, parm = c("scale(out)", "scale(box_val)"))
 ```
 
 Do a quick model-free test of whether participants are more likely to choose the left-side cue when its most
@@ -766,6 +765,58 @@ if (!exists("s3_amp_closed_loop_sim")) {
     subject_params = s3_amp_params
   )
 }
+```
+
+Stay-effect coefficient amputation check.
+```{r, eval=FALSE}
+# Reconstruct the observed stay variable in the closed-loop simulations.
+#
+# Simulated stay is defined like the observed stay variable: whether the participant chooses
+# the same cue the next time that cue pair appears. The final presentation of each pair is NA.
+if (!exists("s3_amp_closed_loop_stay")) {
+  s3_amp_closed_loop_stay <- s3_add_simulated_stay(
+    closed_loop_sim = s3_amp_closed_loop_sim,
+    choice_col = "choice_sim",
+    stay_col = "stay_sim"
+  )
+}
+
+# Fit the same fast stay-effect GLM to observed data and each simulated draw/model.
+s3_amp_observed_stay_effect <- s3_fit_stay_effect_glm(
+  data = trials,
+  stay_col = "stay",
+  source = "Observed"
+)
+s3_amp_sim_stay_effect_draw_summary <- s3_stay_effect_sim_draw_summary(
+  closed_loop_sim = s3_amp_closed_loop_stay,
+  stay_col = "stay_sim"
+)
+s3_amp_sim_stay_effect_summary <- s3_stay_effect_sim_interval_summary(
+  s3_amp_sim_stay_effect_draw_summary
+)
+
+# Save the coefficient summaries separately from the exploratory curve summaries below.
+write.csv(s3_amp_observed_stay_effect, paste0(s3_amp_closed_prefix, "_observed_stay_effect_glm.csv"), row.names = FALSE)
+write.csv(s3_amp_sim_stay_effect_draw_summary, paste0(s3_amp_closed_prefix, "_sim_stay_effect_glm_draw_summary.csv"), row.names = FALSE)
+write.csv(s3_amp_sim_stay_effect_summary, paste0(s3_amp_closed_prefix, "_sim_stay_effect_glm_interval_summary.csv"), row.names = FALSE)
+saveRDS(
+  list(
+    n_draws = s3_amp_n_draws,
+    seed = s3_amp_seed,
+    observed_stay_effect = s3_amp_observed_stay_effect,
+    sim_stay_effect_draw_summary = s3_amp_sim_stay_effect_draw_summary,
+    sim_stay_effect_summary = s3_amp_sim_stay_effect_summary
+  ),
+  paste0(s3_amp_closed_prefix, "_stay_effect_glm_summary_objects.rds")
+)
+
+# Plot observed log-odds coefficients as bars and simulated coefficients as posterior predictive dots.
+s3_amp_stay_effect_plot <- plot_s3_stay_effect_amputation(
+  observed_summary = s3_amp_observed_stay_effect,
+  sim_summary = s3_amp_sim_stay_effect_summary
+)
+s3_amp_stay_effect_plot
+ggsave(paste0(s3_amp_closed_prefix, "_stay_effect_glm_amputation_plot.pdf"), s3_amp_stay_effect_plot, width = 5.3, height = 3.5)
 ```
 
 Last outcome and last box amount choice curves.

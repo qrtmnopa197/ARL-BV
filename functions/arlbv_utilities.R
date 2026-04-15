@@ -1642,3 +1642,189 @@ plot_s3_amputation_last_experience_choice <- function(
       panel.grid.major.y = ggplot2::element_line(color = "#E6E6E6", linewidth = .35)
     )
 }
+
+# Add simulated stay/switch outcomes for the next presentation of the same cue pair.
+# The final presentation of each cue pair has no future comparison and is therefore
+# assigned NA, matching the observed stay variable's intended meaning.
+s3_add_simulated_stay <- function(closed_loop_sim, choice_col = "choice_sim", stay_col = "stay_sim") {
+  required_cols <- c("draw_id", "model", "sub_index", "overall_trial_nl", "fA_ix", "fB_ix", choice_col)
+  missing_cols <- setdiff(required_cols, names(closed_loop_sim))
+  if (length(missing_cols) > 0) {
+    stop("Missing columns for simulated stay construction: ", paste(missing_cols, collapse = ", "))
+  }
+
+  # Include block when available so identical cue labels cannot accidentally bridge task blocks.
+  pair_group_cols <- intersect(c("draw_id", "model", "sub_index", "block", "fA_ix", "fB_ix"), names(closed_loop_sim))
+
+  closed_loop_sim |>
+    dplyr::group_by(dplyr::across(dplyr::all_of(pair_group_cols))) |>
+    dplyr::arrange(overall_trial_nl, .by_group = TRUE) |>
+    dplyr::mutate(
+      next_choice_for_pair = dplyr::lead(.data[[choice_col]]),
+      "{stay_col}" := as.numeric(.data[[choice_col]] == next_choice_for_pair)
+    ) |>
+    dplyr::ungroup() |>
+    dplyr::select(-next_choice_for_pair)
+}
+
+# Fit the model-free stay regression and return the two focal log-odds coefficients.
+# Subject fixed intercepts are included when more than one subject is present, giving
+# the observed and simulated regressions the same fast estimator.
+s3_fit_stay_effect_glm <- function(data, stay_col = "stay", source = "Observed", draw_id = NA_integer_) {
+  fit_df <- data |>
+    dplyr::filter(show_fres == 1, !is.na(.data[[stay_col]]), !is.na(out), !is.na(box_val)) |>
+    dplyr::mutate(
+      stay_response = as.numeric(.data[[stay_col]]),
+      out_z = as.numeric(scale(out)),
+      box_val_z = as.numeric(scale(box_val))
+    )
+
+  use_subject_fe <- "sub_index" %in% names(fit_df) && dplyr::n_distinct(fit_df$sub_index) > 1
+  fit_formula <- if (use_subject_fe) {
+    stay_response ~ out_z + box_val_z + factor(sub_index)
+  } else {
+    stay_response ~ out_z + box_val_z
+  }
+
+  # Return explicit missing rows if a simulated draw produces an unstable fit.
+  fit <- tryCatch(
+    stats::glm(fit_formula, data = fit_df, family = stats::binomial()),
+    error = function(e) NULL
+  )
+  if (is.null(fit)) {
+    return(data.frame(
+      draw_id = draw_id,
+      source = source,
+      predictor = c("Cue outcome", "Box value"),
+      estimate = NA_real_,
+      se = NA_real_,
+      ci_low = NA_real_,
+      ci_high = NA_real_,
+      n_trial = nrow(fit_df)
+    ))
+  }
+
+  coef_df <- as.data.frame(summary(fit)$coefficients)
+  coef_df$term <- rownames(coef_df)
+  term_map <- data.frame(
+    term = c("out_z", "box_val_z"),
+    predictor = c("Cue outcome", "Box value"),
+    stringsAsFactors = FALSE
+  )
+
+  coef_df |>
+    dplyr::right_join(term_map, by = "term") |>
+    dplyr::transmute(
+      draw_id = draw_id,
+      source = source,
+      predictor = predictor,
+      estimate = Estimate,
+      se = `Std. Error`,
+      ci_low = Estimate - stats::qnorm(.975) * `Std. Error`,
+      ci_high = Estimate + stats::qnorm(.975) * `Std. Error`,
+      n_trial = nrow(fit_df)
+    )
+}
+
+# Fit the stay-effect GLM separately for each posterior draw and amputation condition.
+# Each row of the output is a draw-level log-odds coefficient for cue outcome or box value.
+s3_stay_effect_sim_draw_summary <- function(closed_loop_sim, stay_col = "stay_sim") {
+  sim_with_stay <- if (stay_col %in% names(closed_loop_sim)) {
+    closed_loop_sim
+  } else {
+    s3_add_simulated_stay(closed_loop_sim, stay_col = stay_col)
+  }
+
+  split_cols <- c("draw_id", "model")
+  split_index <- do.call(
+    interaction,
+    c(sim_with_stay[split_cols], list(drop = TRUE, lex.order = TRUE))
+  )
+
+  split(sim_with_stay, split_index) |>
+    lapply(function(draw_df) {
+      s3_fit_stay_effect_glm(
+        data = draw_df,
+        stay_col = stay_col,
+        source = draw_df$model[1],
+        draw_id = draw_df$draw_id[1]
+      )
+    }) |>
+    dplyr::bind_rows()
+}
+
+# Collapse draw-level simulated stay effects into posterior predictive intervals.
+# The median is used as the point estimate so occasional unstable simulated fits do
+# not dominate the plotted summary.
+s3_stay_effect_sim_interval_summary <- function(sim_draw_summary) {
+  sim_draw_summary |>
+    dplyr::filter(!is.na(estimate)) |>
+    dplyr::group_by(source, predictor) |>
+    dplyr::summarise(
+      # Use a temporary median name so the quantiles are computed from the
+      # original draw-level coefficient vector, not the just-created median.
+      estimate_median = stats::median(estimate),
+      ci_low = stats::quantile(estimate, .025),
+      ci_high = stats::quantile(estimate, .975),
+      n_draw = dplyr::n(),
+      .groups = "drop"
+    ) |>
+    dplyr::rename(estimate = estimate_median)
+}
+
+# Plot observed stay-effect coefficients against full and A_fr-amputated simulations.
+# Observed effects are shown as bars with Wald CIs; simulated effects are shown as
+# posterior predictive median dots without intervals.
+plot_s3_stay_effect_amputation <- function(observed_summary, sim_summary) {
+  predictor_levels <- c("Cue outcome", "Box value")
+  sim_levels <- c("Full closed-loop", "A_fr amputated closed-loop")
+  sim_colors <- c(
+    "Full closed-loop" = "#2B6CB0",
+    "A_fr amputated closed-loop" = "#B83227"
+  )
+
+  observed_plot <- observed_summary |>
+    dplyr::mutate(predictor = factor(predictor, levels = predictor_levels))
+  sim_plot <- sim_summary |>
+    dplyr::mutate(
+      predictor = factor(predictor, levels = predictor_levels),
+      source = factor(source, levels = sim_levels)
+    )
+
+  sim_dodge <- ggplot2::position_dodge(width = .13)
+
+  ggplot2::ggplot() +
+    ggplot2::geom_col(
+      data = observed_plot,
+      ggplot2::aes(x = predictor, y = estimate),
+      fill = "grey82",
+      color = "grey35",
+      width = .56
+    ) +
+    ggplot2::geom_errorbar(
+      data = observed_plot,
+      ggplot2::aes(x = predictor, ymin = ci_low, ymax = ci_high),
+      width = .16,
+      color = "grey20"
+    ) +
+    ggplot2::geom_hline(yintercept = 0, linewidth = .35, color = "black") +
+    ggplot2::geom_point(
+      data = sim_plot,
+      ggplot2::aes(x = predictor, y = estimate, color = source, group = source),
+      position = sim_dodge,
+      size = 4
+    ) +
+    ggplot2::scale_color_manual(values = sim_colors) +
+    ggplot2::labs(
+      x = "",
+      y = NULL,
+      color = ""
+    ) +
+    ggplot2::theme_classic() +
+    ggplot2::theme(
+      legend.position = "bottom",
+      axis.line.x = ggplot2::element_blank(),
+      axis.ticks.x = ggplot2::element_blank(),
+      panel.grid.major.y = ggplot2::element_line(color = "#E6E6E6", linewidth = .35)
+    )
+}
