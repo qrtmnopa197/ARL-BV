@@ -728,3 +728,1496 @@ build_s3_choice_param_recovery_plot_from_file <- function(
 
   list(estimates = estimates_df, panel_plot = panel_plot)
 }
+
+# List final_ls posterior variables needed for the Study 3 replay amputation.
+# These are the hierarchical choice, learning, and valence parameters used to rebuild
+# trial-wise latent states under the fitted model.
+s3_amputation_required_vars <- function() {
+  hier_params <- c(
+    "rew_fr_sens", "aff_fr_sens", "resid_fr_sens",
+    "rew_nf_sens", "aff_nf_sens", "resid_nf_sens",
+    "ls_bias", "csens",
+    "dcy_fr", "dcy_nf", "lrn_fr", "lrn_nf", "lrn_c",
+    "B_0", "B_rew_fr", "B_rew_nf", "B_bv_fr",
+    "B_q_fr", "B_q_nf", "B_pwqd_fr", "B_pwqd_nf", "B_auto"
+  )
+
+  c(
+    as.vector(rbind(paste0(hier_params, "_mu"), paste0(hier_params, "_sigma"), paste0(hier_params, "_z"))),
+    "resid_sigma"
+  )
+}
+
+# Convert selected final_ls posterior draws into subject-level parameter rows.
+# The returned data frame has one row per posterior draw per participant, which is
+# the format used by the replay simulation helpers below.
+s3_posterior_draws_to_subject_params <- function(draws_array, sub_ids, n_draws = 100, seed = 19) {
+  set.seed(seed)
+
+  # Identify and sample posterior draws after flattening iterations and chains.
+  draw_dims <- dim(draws_array)
+  draw_names <- dimnames(draws_array)[[3]]
+  flat_draws <- matrix(
+    draws_array,
+    nrow = draw_dims[1] * draw_dims[2],
+    ncol = draw_dims[3],
+    dimnames = list(NULL, draw_names)
+  )
+  draw_rows <- sample(seq_len(nrow(flat_draws)), size = min(n_draws, nrow(flat_draws)), replace = FALSE)
+
+  # Define which hierarchical parameters need logit transformation after reconstruction.
+  hier_params <- c(
+    "rew_fr_sens", "aff_fr_sens", "resid_fr_sens",
+    "rew_nf_sens", "aff_nf_sens", "resid_nf_sens",
+    "ls_bias", "csens",
+    "dcy_fr", "dcy_nf", "lrn_fr", "lrn_nf", "lrn_c",
+    "B_0", "B_rew_fr", "B_rew_nf", "B_bv_fr",
+    "B_q_fr", "B_q_nf", "B_pwqd_fr", "B_pwqd_nf", "B_auto"
+  )
+  bounded_params <- c("dcy_fr", "dcy_nf", "lrn_fr", "lrn_nf", "lrn_c")
+
+  # Reconstruct subject-level parameters for each sampled posterior draw.
+  out_list <- vector("list", length(draw_rows))
+  for (d in seq_along(draw_rows)) {
+    draw_vec <- flat_draws[draw_rows[d], ]
+    draw_df <- data.frame(
+      draw_id = d,
+      posterior_row = draw_rows[d],
+      sub_index = sub_ids,
+      resid_sigma = as.numeric(draw_vec["resid_sigma"])
+    )
+
+    # Combine population means, population SDs, and subject z-scores.
+    for (p in hier_params) {
+      mu <- as.numeric(draw_vec[paste0(p, "_mu")])
+      sigma <- as.numeric(draw_vec[paste0(p, "_sigma")])
+      z_names <- paste0(p, "_z[", seq_along(sub_ids), "]")
+      z <- as.numeric(draw_vec[z_names])
+      vals <- mu + sigma * z
+
+      # Learning and decay parameters live on the logit scale in Stan.
+      if (p %in% bounded_params) {
+        vals <- plogis(vals)
+      }
+      draw_df[[p]] <- vals
+    }
+
+    out_list[[d]] <- draw_df
+  }
+
+  dplyr::bind_rows(out_list)
+}
+
+# Convert final_ls posterior draws into posterior-mean subject-level parameters.
+# This provides a fast, single-parameter-set diagnostic that preserves participant
+# heterogeneity but skips posterior predictive averaging.
+s3_posterior_mean_subject_params <- function(fit_draws, sub_ids) {
+  # Accept either the cmdstanr read object or the raw post_warmup_draws array.
+  draws_array <- if (is.list(fit_draws) && !is.null(fit_draws$post_warmup_draws)) {
+    fit_draws$post_warmup_draws
+  } else {
+    fit_draws
+  }
+
+  # Flatten iterations and chains so posterior means can be computed by column.
+  draw_dims <- dim(draws_array)
+  draw_names <- dimnames(draws_array)[[3]]
+  flat_draws <- matrix(
+    draws_array,
+    nrow = draw_dims[1] * draw_dims[2],
+    ncol = draw_dims[3],
+    dimnames = list(NULL, draw_names)
+  )
+
+  hier_params <- c(
+    "rew_fr_sens", "aff_fr_sens", "resid_fr_sens",
+    "rew_nf_sens", "aff_nf_sens", "resid_nf_sens",
+    "ls_bias", "csens",
+    "dcy_fr", "dcy_nf", "lrn_fr", "lrn_nf", "lrn_c",
+    "B_0", "B_rew_fr", "B_rew_nf", "B_bv_fr",
+    "B_q_fr", "B_q_nf", "B_pwqd_fr", "B_pwqd_nf", "B_auto"
+  )
+  bounded_params <- c("dcy_fr", "dcy_nf", "lrn_fr", "lrn_nf", "lrn_c")
+
+  subj_params <- data.frame(
+    draw_id = 1,
+    posterior_row = NA_integer_,
+    sub_index = sub_ids,
+    resid_sigma = mean(flat_draws[, "resid_sigma"]),
+    stringsAsFactors = FALSE
+  )
+
+  # Reconstruct each subject-level parameter on every draw, then average it.
+  for (p in hier_params) {
+    mu <- flat_draws[, paste0(p, "_mu")]
+    sigma <- flat_draws[, paste0(p, "_sigma")]
+    z_names <- paste0(p, "_z[", seq_along(sub_ids), "]")
+    z_mat <- flat_draws[, z_names, drop = FALSE]
+
+    vals <- sweep(sweep(z_mat, 1, sigma, `*`), 1, mu, `+`)
+    if (p %in% bounded_params) {
+      vals <- plogis(vals)
+    }
+
+    subj_params[[p]] <- colMeans(vals)
+  }
+
+  subj_params
+}
+
+# Reconstruct subject-level mean parameters from the fitted model summary table.
+# This avoids reading CmdStan CSVs and is the fastest way to get a single fitted
+# parameter set for policy-implied p(stay) diagnostics.
+s3_summary_mean_subject_params <- function(sum_df, sub_ids) {
+  mean_from_summary <- function(var_name) {
+    out <- sum_df$mean[sum_df$variable == var_name]
+    if (length(out) != 1) {
+      stop(paste0("Could not find exactly one summary row for ", var_name, "."))
+    }
+    out
+  }
+
+  hier_params <- c(
+    "rew_fr_sens", "aff_fr_sens", "resid_fr_sens",
+    "rew_nf_sens", "aff_nf_sens", "resid_nf_sens",
+    "ls_bias", "csens",
+    "dcy_fr", "dcy_nf", "lrn_fr", "lrn_nf", "lrn_c",
+    "B_0", "B_rew_fr", "B_rew_nf", "B_bv_fr",
+    "B_q_fr", "B_q_nf", "B_pwqd_fr", "B_pwqd_nf", "B_auto"
+  )
+  bounded_params <- c("dcy_fr", "dcy_nf", "lrn_fr", "lrn_nf", "lrn_c")
+
+  subj_params <- data.frame(
+    draw_id = 1,
+    posterior_row = NA_integer_,
+    sub_index = sub_ids,
+    resid_sigma = mean_from_summary("resid_sigma"),
+    stringsAsFactors = FALSE
+  )
+
+  # Use the summary-table means for each hierarchical component.
+  for (p in hier_params) {
+    mu <- mean_from_summary(paste0(p, "_mu"))
+    sigma <- mean_from_summary(paste0(p, "_sigma"))
+    z <- vapply(seq_along(sub_ids), function(i) mean_from_summary(paste0(p, "_z[", i, "]")), numeric(1))
+
+    vals <- mu + sigma * z
+    if (p %in% bounded_params) {
+      vals <- plogis(vals)
+    }
+    subj_params[[p]] <- vals
+  }
+
+  subj_params
+}
+
+# Read final_ls posterior draws needed for the Study 3 replay amputation.
+# This is the expensive step; call it once, then reuse the returned object when
+# rerunning simulations or changing the number of sampled posterior draws.
+s3_read_amputation_draws <- function(
+  model = "final_ls",
+  model_out_dir = "~/projects/ARL_bv/output/results/stan_model_fits/final_samp_fits/"
+) {
+  fit_csvs <- list.files(paste0(model_out_dir, model), pattern = "\\.csv$", full.names = TRUE)
+  if (length(fit_csvs) > 4) {
+    stop("There is more than one set of model fit CSV files in the specified folder.")
+  } else if (length(fit_csvs) < 2) {
+    stop("There is not a full set of model fit CSV files in the specified folder.")
+  }
+
+  cmdstanr::read_cmdstan_csv(
+    files = fit_csvs,
+    variables = s3_amputation_required_vars()
+  )
+}
+
+# Sample subject-level parameters from already-read final_ls posterior draws.
+# Passing fit_draws keeps simulation reruns fast because the CmdStan CSVs do not
+# need to be read again.
+s3_sample_amputation_subject_params <- function(
+  fit_draws = NULL,
+  model = "final_ls",
+  model_out_dir = "~/projects/ARL_bv/output/results/stan_model_fits/final_samp_fits/",
+  sub_ids,
+  n_draws = 100,
+  seed = 19
+) {
+  # Fall back to reading draws here for older code paths, but prefer passing fit_draws.
+  if (is.null(fit_draws)) {
+    fit_draws <- s3_read_amputation_draws(
+      model = model,
+      model_out_dir = model_out_dir
+    )
+  }
+
+  # Accept either the cmdstanr read object or the raw post_warmup_draws array.
+  draws_array <- if (is.list(fit_draws) && !is.null(fit_draws$post_warmup_draws)) {
+    fit_draws$post_warmup_draws
+  } else {
+    fit_draws
+  }
+
+  s3_posterior_draws_to_subject_params(
+    draws_array = draws_array,
+    sub_ids = sub_ids,
+    n_draws = n_draws,
+    seed = seed
+  )
+}
+
+# Build median-anchored parameter rows for fast debugging of replay code.
+# This is not the posterior predictive analysis; it simply avoids expensive CSV
+# reads when checking that the replay and plotting functions behave sensibly.
+s3_build_median_amputation_params <- function(sum_df, sub_ids) {
+  if (!exists("get_s1_median", mode = "function")) {
+    stop("A summary-median helper is required (source s22_utilities.R).")
+  }
+
+  anchor_list <- s3_build_choice_recovery_anchor(sum_df = sum_df)
+  subj_params <- s3_draw_subject_params(
+    anchor_list = anchor_list,
+    sub_ids = sub_ids,
+    true_fr_means = c(
+      rew_fr_sens = get_s1_median(sum_df, "rew_fr_sens_mu"),
+      aff_fr_sens = get_s1_median(sum_df, "aff_fr_sens_mu"),
+      resid_fr_sens = get_s1_median(sum_df, "resid_fr_sens_mu")
+    )
+  )
+  subj_params$draw_id <- 1
+  subj_params$posterior_row <- NA_integer_
+  subj_params$resid_sigma <- get_s1_median(sum_df, "resid_sigma")
+
+  subj_params
+}
+
+# Prepare the fixed trial scaffold used by the replay amputation.
+# The observed choices, outcomes, and ratings are retained so the latent histories
+# are replayed along the same path as the original final_ls model fit.
+s3_prepare_amputation_template <- function(trials) {
+  trials |>
+    dplyr::filter(!is.na(choice_numeric)) |>
+    dplyr::select(
+      sub_index, overall_trial_nl, block, trial_nl, fA_ix, fB_ix, choice_numeric,
+      chosen_frac, unchosen_frac, show_fres, out, box_val,
+      rat_number, valrat_z, prev_rate, stay
+    ) |>
+    dplyr::arrange(sub_index, overall_trial_nl)
+}
+
+# Add stay/switch coding to simulated choices.
+# Stay is defined exactly as in the raw data: whether the same option is chosen
+# at the next presentation of the same pair for that participant.
+s3_add_simulated_stay <- function(sim_df, choice_col = "choice_sim", p_stay_choice_col = "choice_numeric") {
+  sim_df |>
+    dplyr::arrange(draw_id, model, sub_index, fA_ix, overall_trial_nl) |>
+    dplyr::group_by(draw_id, model, sub_index, fA_ix) |>
+    dplyr::mutate(
+      stay_sim = dplyr::if_else(
+        is.na(dplyr::lead(.data[[choice_col]])),
+        NA_real_,
+        as.numeric(.data[[choice_col]] == dplyr::lead(.data[[choice_col]]))
+      ),
+      p_stay_pred = dplyr::case_when(
+        is.na(dplyr::lead(p_choose_a)) ~ NA_real_,
+        .data[[p_stay_choice_col]] == 1L ~ dplyr::lead(p_choose_a),
+        .data[[p_stay_choice_col]] == 2L ~ 1 - dplyr::lead(p_choose_a),
+        TRUE ~ NA_real_
+      )
+    ) |>
+    dplyr::ungroup()
+}
+
+# Add policy-implied p(stay) without using simulated binary choices.
+# This is used for posterior-mean parameter diagnostics where the goal is to avoid
+# binary simulation noise entirely.
+s3_add_policy_predicted_stay <- function(sim_df, p_stay_choice_col = "choice_numeric") {
+  sim_df |>
+    dplyr::arrange(draw_id, model, sub_index, fA_ix, overall_trial_nl) |>
+    dplyr::group_by(draw_id, model, sub_index, fA_ix) |>
+    dplyr::mutate(
+      p_stay_pred = dplyr::case_when(
+        is.na(dplyr::lead(p_choose_a)) ~ NA_real_,
+        .data[[p_stay_choice_col]] == 1L ~ dplyr::lead(p_choose_a),
+        .data[[p_stay_choice_col]] == 2L ~ 1 - dplyr::lead(p_choose_a),
+        TRUE ~ NA_real_
+      )
+    ) |>
+    dplyr::ungroup()
+}
+
+# Add last-experience cue outcome and box-value differences to one trial sequence.
+# The histories are stored before the current choice, then updated after feedback
+# trials from the chosen cue. This mirrors the model-free choice regression in the
+# Rmd and gives the amputation plots an interpretable raw-history x-axis.
+s3_add_last_experience_subject <- function(sub_trials, choice_col = "choice_numeric") {
+  has_block <- "block" %in% names(sub_trials)
+  order_cols <- if (has_block && "trial_nl" %in% names(sub_trials)) {
+    c("block", "trial_nl")
+  } else {
+    "overall_trial_nl"
+  }
+  sub_trials <- sub_trials |>
+    dplyr::arrange(dplyr::across(dplyr::all_of(order_cols)))
+
+  # Initialize cue-specific histories within this participant/model/draw path.
+  n_frac <- max(c(sub_trials$fA_ix, sub_trials$fB_ix), na.rm = TRUE)
+  last_out <- rep(NA_real_, n_frac)
+  last_box <- rep(NA_real_, n_frac)
+  current_block <- NA
+
+  # Allocate trial-level pre-choice history columns.
+  sub_trials$last_out_fA <- NA_real_
+  sub_trials$last_out_fB <- NA_real_
+  sub_trials$last_box_fA <- NA_real_
+  sub_trials$last_box_fB <- NA_real_
+
+  for (row in seq_len(nrow(sub_trials))) {
+    # Reset at block boundaries when block labels are available. In Study 3, this
+    # prevents a previous block's cue history from contaminating the current pair.
+    if (has_block && (is.na(current_block) || sub_trials$block[row] != current_block)) {
+      last_out <- rep(NA_real_, n_frac)
+      last_box <- rep(NA_real_, n_frac)
+      current_block <- sub_trials$block[row]
+    }
+
+    # Store the histories available to the participant before the current choice.
+    cue_a <- sub_trials$fA_ix[row]
+    cue_b <- sub_trials$fB_ix[row]
+    sub_trials$last_out_fA[row] <- last_out[cue_a]
+    sub_trials$last_out_fB[row] <- last_out[cue_b]
+    sub_trials$last_box_fA[row] <- last_box[cue_a]
+    sub_trials$last_box_fB[row] <- last_box[cue_b]
+
+    # Update only after feedback trials, because only those trials pair a cue
+    # outcome with the concurrent box amount.
+    choice_val <- sub_trials[[choice_col]][row]
+    if (!is.na(choice_val) && !is.na(sub_trials$show_fres[row]) && sub_trials$show_fres[row] == 1) {
+      chosen_frac <- dplyr::case_when(
+        choice_val == 1L ~ cue_a,
+        choice_val == 2L ~ cue_b,
+        TRUE ~ NA_integer_
+      )
+
+      if (!is.na(chosen_frac)) {
+        last_out[chosen_frac] <- sub_trials$out[row]
+        last_box[chosen_frac] <- sub_trials$box_val[row]
+      }
+    }
+  }
+
+  sub_trials |>
+    dplyr::mutate(
+      last_out_diff = last_out_fA - last_out_fB,
+      last_box_diff = last_box_fA - last_box_fB
+    )
+}
+
+# Add last-experience predictors to observed or simulated Study 3 paths.
+# Simulated data are grouped by draw, model, and subject so the histories do not
+# leak across posterior draws or between full and amputated closed-loop paths.
+s3_add_last_experience_diffs <- function(trial_df, choice_col = "choice_numeric") {
+  required_cols <- c("sub_index", "overall_trial_nl", "fA_ix", "fB_ix", choice_col, "show_fres", "out", "box_val")
+  missing_cols <- setdiff(required_cols, names(trial_df))
+  if (length(missing_cols) > 0) {
+    stop("Missing columns for last-experience summaries: ", paste(missing_cols, collapse = ", "))
+  }
+
+  grouping_cols <- intersect(c("draw_id", "model", "sub_index"), names(trial_df))
+  split_index <- do.call(
+    interaction,
+    c(trial_df[grouping_cols], list(drop = TRUE, lex.order = TRUE))
+  )
+
+  split(trial_df, split_index) |>
+    lapply(s3_add_last_experience_subject, choice_col = choice_col) |>
+    dplyr::bind_rows() |>
+    dplyr::arrange(dplyr::across(dplyr::any_of(c("draw_id", "model", "sub_index", "overall_trial_nl"))))
+}
+
+# Replay one participant's observed history and simulate choices from the fitted policy.
+# The key amputation is controlled by aff_fr_multiplier: 1 leaves the final_ls A_fr
+# choice path intact, while 0 removes only the A_fr -> choice term.
+s3_replay_subject_amputation <- function(
+  sub_design,
+  par_row,
+  n_f,
+  aff_fr_multiplier = 1,
+  model_label = "Full",
+  simulate_choice = TRUE
+) {
+  sub_design <- sub_design[order(sub_design$overall_trial_nl), , drop = FALSE]
+
+  # Allocate simulated outputs while keeping observed trial fields for summaries.
+  sub_design$model <- model_label
+  sub_design$draw_id <- par_row$draw_id[1]
+  sub_design$p_choose_a <- NA_real_
+  sub_design$choice_sim <- NA_integer_
+
+  # Initialize the latent association states used by final_ls.
+  Q_fr <- rep(0, n_f)
+  Q_nf <- rep(0, n_f)
+  A_fr <- rep(0, n_f)
+  A_nf <- rep(0, n_f)
+  R_fr <- rep(0, n_f)
+  R_nf <- rep(0, n_f)
+  C <- rep(0, n_f)
+
+  # Walk through the observed trial sequence, updating histories from observed choices.
+  for (t in seq_len(nrow(sub_design))) {
+    cue_a <- sub_design$fA_ix[t]
+    cue_b <- sub_design$fB_ix[t]
+    obs_choice <- sub_design$choice_numeric[t]
+    chosen_frac <- sub_design$chosen_frac[t]
+    unchosen_frac <- sub_design$unchosen_frac[t]
+
+    # Compute full or amputated choice values from the current replayed state.
+    value_a <- par_row$rew_fr_sens * Q_fr[cue_a] + par_row$rew_nf_sens * Q_nf[cue_a] +
+      aff_fr_multiplier * par_row$aff_fr_sens * A_fr[cue_a] + par_row$aff_nf_sens * A_nf[cue_a] +
+      par_row$resid_fr_sens * R_fr[cue_a] + par_row$resid_nf_sens * R_nf[cue_a] +
+      par_row$csens * C[cue_a] + par_row$ls_bias
+
+    value_b <- par_row$rew_fr_sens * Q_fr[cue_b] + par_row$rew_nf_sens * Q_nf[cue_b] +
+      aff_fr_multiplier * par_row$aff_fr_sens * A_fr[cue_b] + par_row$aff_nf_sens * A_nf[cue_b] +
+      par_row$resid_fr_sens * R_fr[cue_b] + par_row$resid_nf_sens * R_nf[cue_b] +
+      par_row$csens * C[cue_b]
+
+    p_choose_a <- 1 / (1 + exp(value_b - value_a))
+    sub_design$p_choose_a[t] <- p_choose_a
+    sub_design$choice_sim[t] <- if (isTRUE(simulate_choice)) {
+      ifelse(runif(1) < p_choose_a, 1L, 2L)
+    } else {
+      NA_integer_
+    }
+
+    # Recreate the valence prediction from the original model using the observed choice.
+    p_observed <- ifelse(obs_choice == 1L, p_choose_a, 1 - p_choose_a)
+    if (sub_design$show_fres[t] == 1) {
+      curr_pred <- par_row$B_0 + par_row$B_rew_fr * sub_design$out[t] +
+        par_row$B_bv_fr * sub_design$box_val[t] +
+        par_row$B_q_fr * Q_fr[chosen_frac] +
+        par_row$B_pwqd_fr * (Q_fr[chosen_frac] * p_observed + Q_fr[unchosen_frac] * (1 - p_observed))
+    } else {
+      curr_pred <- par_row$B_0 + par_row$B_rew_nf * sub_design$out[t] +
+        par_row$B_q_nf * Q_fr[chosen_frac] +
+        par_row$B_pwqd_nf * (Q_fr[chosen_frac] * p_observed + Q_fr[unchosen_frac] * (1 - p_observed))
+    }
+
+    # Use observed ratings to replay the residual association stream.
+    nuis <- par_row$B_auto * sub_design$prev_rate[t]
+    resid <- ifelse(
+      !is.na(sub_design$valrat_z[t]),
+      sub_design$valrat_z[t] - (curr_pred + nuis),
+      0
+    )
+
+    # Apply decay before updating the stream associated with the observed outcome type.
+    Q_fr <- (1 - par_row$dcy_fr) * Q_fr
+    Q_nf <- (1 - par_row$dcy_nf) * Q_nf
+    A_fr <- (1 - par_row$dcy_fr) * A_fr
+    A_nf <- (1 - par_row$dcy_nf) * A_nf
+    R_fr <- (1 - par_row$dcy_fr) * R_fr
+    R_nf <- (1 - par_row$dcy_nf) * R_nf
+
+    # Update the observed chosen cue, preserving the fitted model's learning equations.
+    if (sub_design$show_fres[t] == 1) {
+      Q_fr[chosen_frac] <- Q_fr[chosen_frac] + par_row$lrn_fr * (sub_design$out[t] - Q_fr[chosen_frac])
+      A_fr[chosen_frac] <- A_fr[chosen_frac] + par_row$lrn_fr * (curr_pred - A_fr[chosen_frac])
+      R_fr[chosen_frac] <- R_fr[chosen_frac] + par_row$lrn_fr * (resid - R_fr[chosen_frac])
+    } else {
+      Q_nf[chosen_frac] <- Q_nf[chosen_frac] + par_row$lrn_nf * (sub_design$out[t] - Q_nf[chosen_frac])
+      A_nf[chosen_frac] <- A_nf[chosen_frac] + par_row$lrn_nf * (curr_pred - A_nf[chosen_frac])
+      R_nf[chosen_frac] <- R_nf[chosen_frac] + par_row$lrn_nf * (resid - R_nf[chosen_frac])
+    }
+
+    # Reconstruct the choice-autocorrelation state from the observed choices.
+    choice_a <- ifelse(obs_choice == 1L, 1, 0)
+    choice_b <- ifelse(obs_choice == 2L, 1, 0)
+    C[cue_a] <- C[cue_a] + par_row$lrn_c * (choice_a - C[cue_a])
+    C[cue_b] <- C[cue_b] + par_row$lrn_c * (choice_b - C[cue_b])
+  }
+
+  sub_design
+}
+
+# Simulate one participant in a closed-loop Study 3 amputation.
+# Unlike replay, simulated choices determine subsequent Q/A/R/C histories. The task
+# schedule and outcome stream are kept fixed, so this isolates feedback from the
+# model's own choices without needing to regenerate task outcomes.
+s3_closed_loop_subject_amputation <- function(sub_design, par_row, n_f, aff_fr_multiplier = 1, model_label = "Full closed-loop") {
+  sub_design <- sub_design[order(sub_design$overall_trial_nl), , drop = FALSE]
+
+  # Allocate simulated outputs and keep the observed trial fields for condition summaries.
+  sub_design$model <- model_label
+  sub_design$draw_id <- par_row$draw_id[1]
+  sub_design$p_choose_a <- NA_real_
+  sub_design$choice_sim <- NA_integer_
+  sub_design$chosen_frac_sim <- NA_integer_
+  sub_design$unchosen_frac_sim <- NA_integer_
+  sub_design$valrat_sim <- NA_real_
+
+  # Initialize the latent state vectors at the start of the task.
+  Q_fr <- rep(0, n_f)
+  Q_nf <- rep(0, n_f)
+  A_fr <- rep(0, n_f)
+  A_nf <- rep(0, n_f)
+  R_fr <- rep(0, n_f)
+  R_nf <- rep(0, n_f)
+  C <- rep(0, n_f)
+  prev_sim <- 0
+
+  # Generate choices and update histories from the model's own simulated path.
+  for (t in seq_len(nrow(sub_design))) {
+    cue_a <- sub_design$fA_ix[t]
+    cue_b <- sub_design$fB_ix[t]
+
+    # Evaluate the full or A_fr-amputated policy at the current simulated state.
+    value_a <- par_row$rew_fr_sens * Q_fr[cue_a] + par_row$rew_nf_sens * Q_nf[cue_a] +
+      aff_fr_multiplier * par_row$aff_fr_sens * A_fr[cue_a] + par_row$aff_nf_sens * A_nf[cue_a] +
+      par_row$resid_fr_sens * R_fr[cue_a] + par_row$resid_nf_sens * R_nf[cue_a] +
+      par_row$csens * C[cue_a] + par_row$ls_bias
+
+    value_b <- par_row$rew_fr_sens * Q_fr[cue_b] + par_row$rew_nf_sens * Q_nf[cue_b] +
+      aff_fr_multiplier * par_row$aff_fr_sens * A_fr[cue_b] + par_row$aff_nf_sens * A_nf[cue_b] +
+      par_row$resid_fr_sens * R_fr[cue_b] + par_row$resid_nf_sens * R_nf[cue_b] +
+      par_row$csens * C[cue_b]
+
+    p_choose_a <- 1 / (1 + exp(value_b - value_a))
+    choice_sim <- ifelse(runif(1) < p_choose_a, 1L, 2L)
+    chosen_frac <- ifelse(choice_sim == 1L, cue_a, cue_b)
+    unchosen_frac <- ifelse(choice_sim == 1L, cue_b, cue_a)
+    p_chosen <- ifelse(choice_sim == 1L, p_choose_a, 1 - p_choose_a)
+
+    sub_design$p_choose_a[t] <- p_choose_a
+    sub_design$choice_sim[t] <- choice_sim
+    sub_design$chosen_frac_sim[t] <- chosen_frac
+    sub_design$unchosen_frac_sim[t] <- unchosen_frac
+
+    # Generate the valence prediction from the simulated choice path.
+    if (sub_design$show_fres[t] == 1) {
+      curr_pred <- par_row$B_0 + par_row$B_rew_fr * sub_design$out[t] +
+        par_row$B_bv_fr * sub_design$box_val[t] +
+        par_row$B_q_fr * Q_fr[chosen_frac] +
+        par_row$B_pwqd_fr * (Q_fr[chosen_frac] * p_chosen + Q_fr[unchosen_frac] * (1 - p_chosen))
+    } else {
+      curr_pred <- par_row$B_0 + par_row$B_rew_nf * sub_design$out[t] +
+        par_row$B_q_nf * Q_fr[chosen_frac] +
+        par_row$B_pwqd_nf * (Q_fr[chosen_frac] * p_chosen + Q_fr[unchosen_frac] * (1 - p_chosen))
+    }
+
+    # Simulate a valence rating so residual associations can evolve in closed loop.
+    nuis <- par_row$B_auto * prev_sim
+    valrat_sim <- curr_pred + nuis + rnorm(1, mean = 0, sd = par_row$resid_sigma)
+    resid <- valrat_sim - (curr_pred + nuis)
+    sub_design$valrat_sim[t] <- valrat_sim
+    prev_sim <- valrat_sim
+
+    # Decay all streams before applying the outcome update for this trial.
+    Q_fr <- (1 - par_row$dcy_fr) * Q_fr
+    Q_nf <- (1 - par_row$dcy_nf) * Q_nf
+    A_fr <- (1 - par_row$dcy_fr) * A_fr
+    A_nf <- (1 - par_row$dcy_nf) * A_nf
+    R_fr <- (1 - par_row$dcy_fr) * R_fr
+    R_nf <- (1 - par_row$dcy_nf) * R_nf
+
+    # Update the simulated chosen cue in the FR or NF stream.
+    if (sub_design$show_fres[t] == 1) {
+      Q_fr[chosen_frac] <- Q_fr[chosen_frac] + par_row$lrn_fr * (sub_design$out[t] - Q_fr[chosen_frac])
+      A_fr[chosen_frac] <- A_fr[chosen_frac] + par_row$lrn_fr * (curr_pred - A_fr[chosen_frac])
+      R_fr[chosen_frac] <- R_fr[chosen_frac] + par_row$lrn_fr * (resid - R_fr[chosen_frac])
+    } else {
+      Q_nf[chosen_frac] <- Q_nf[chosen_frac] + par_row$lrn_nf * (sub_design$out[t] - Q_nf[chosen_frac])
+      A_nf[chosen_frac] <- A_nf[chosen_frac] + par_row$lrn_nf * (curr_pred - A_nf[chosen_frac])
+      R_nf[chosen_frac] <- R_nf[chosen_frac] + par_row$lrn_nf * (resid - R_nf[chosen_frac])
+    }
+
+    # Let simulated choices, rather than observed choices, drive autocorrelation.
+    choice_a <- ifelse(choice_sim == 1L, 1, 0)
+    choice_b <- ifelse(choice_sim == 2L, 1, 0)
+    C[cue_a] <- C[cue_a] + par_row$lrn_c * (choice_a - C[cue_a])
+    C[cue_b] <- C[cue_b] + par_row$lrn_c * (choice_b - C[cue_b])
+  }
+
+  sub_design
+}
+
+# Replay and simulate choices for all participants under the full and amputated models.
+# This is the main simulation engine used by the Rmd analysis.
+s3_run_replay_amputation <- function(trial_template, subject_params) {
+  sub_ids <- sort(unique(trial_template$sub_index))
+  draw_ids <- sort(unique(subject_params$draw_id))
+  n_f <- max(c(trial_template$fA_ix, trial_template$fB_ix), na.rm = TRUE)
+
+  out_list <- vector("list", length(draw_ids) * length(sub_ids) * 2)
+  out_idx <- 1
+
+  # Loop draw-by-draw so each posterior sample produces a full and amputated dataset.
+  for (d in draw_ids) {
+    draw_params <- subject_params[subject_params$draw_id == d, , drop = FALSE]
+
+    for (s in sub_ids) {
+      sub_design <- trial_template[trial_template$sub_index == s, , drop = FALSE]
+      par_row <- draw_params[draw_params$sub_index == s, , drop = FALSE]
+
+      out_list[[out_idx]] <- s3_replay_subject_amputation(
+        sub_design = sub_design,
+        par_row = par_row,
+        n_f = n_f,
+        aff_fr_multiplier = 1,
+        model_label = "Full posterior predictive"
+      )
+      out_idx <- out_idx + 1
+
+      out_list[[out_idx]] <- s3_replay_subject_amputation(
+        sub_design = sub_design,
+        par_row = par_row,
+        n_f = n_f,
+        aff_fr_multiplier = 0,
+        model_label = "A_fr amputated"
+      )
+      out_idx <- out_idx + 1
+    }
+  }
+
+  dplyr::bind_rows(out_list) |>
+    s3_add_simulated_stay(choice_col = "choice_sim")
+}
+
+# Replay simulations draw-by-draw and save only compact condition summaries.
+# This is preferable for 500+ posterior draws because it avoids holding the full
+# trial-level posterior predictive dataset in memory.
+s3_run_replay_amputation_draw_summary <- function(trial_template, subject_params) {
+  sub_ids <- sort(unique(trial_template$sub_index))
+  draw_ids <- sort(unique(subject_params$draw_id))
+  n_f <- max(c(trial_template$fA_ix, trial_template$fB_ix), na.rm = TRUE)
+
+  draw_summaries <- vector("list", length(draw_ids))
+
+  # Process each posterior draw independently, then discard trial-level simulations.
+  for (i in seq_along(draw_ids)) {
+    d <- draw_ids[i]
+    draw_params <- subject_params[subject_params$draw_id == d, , drop = FALSE]
+    draw_sim_list <- vector("list", length(sub_ids) * 2)
+    sim_idx <- 1
+
+    # Simulate all participants under the full and amputated policies for this draw.
+    for (s in sub_ids) {
+      sub_design <- trial_template[trial_template$sub_index == s, , drop = FALSE]
+      par_row <- draw_params[draw_params$sub_index == s, , drop = FALSE]
+
+      draw_sim_list[[sim_idx]] <- s3_replay_subject_amputation(
+        sub_design = sub_design,
+        par_row = par_row,
+        n_f = n_f,
+        aff_fr_multiplier = 1,
+        model_label = "Full posterior predictive"
+      )
+      sim_idx <- sim_idx + 1
+
+      draw_sim_list[[sim_idx]] <- s3_replay_subject_amputation(
+        sub_design = sub_design,
+        par_row = par_row,
+        n_f = n_f,
+        aff_fr_multiplier = 0,
+        model_label = "A_fr amputated"
+      )
+      sim_idx <- sim_idx + 1
+    }
+
+    # Convert this draw's simulated choices into the compact summary saved downstream.
+    draw_summaries[[i]] <- dplyr::bind_rows(draw_sim_list) |>
+      s3_add_simulated_stay(choice_col = "choice_sim") |>
+      s3_simulated_stay_draw_summary()
+  }
+
+  dplyr::bind_rows(draw_summaries)
+}
+
+# Replay simulations draw-by-draw and return all compact summaries needed for diagnostics.
+# This wrapper saves both realized simulated stay rates and policy-implied stay probabilities.
+s3_run_replay_amputation_summary_set <- function(trial_template, subject_params) {
+  sub_ids <- sort(unique(trial_template$sub_index))
+  draw_ids <- sort(unique(subject_params$draw_id))
+  n_f <- max(c(trial_template$fA_ix, trial_template$fB_ix), na.rm = TRUE)
+
+  sim_draw_summaries <- vector("list", length(draw_ids))
+  pred_draw_summaries <- vector("list", length(draw_ids))
+  choice_sim_draw_summaries <- vector("list", length(draw_ids))
+  choice_pred_draw_summaries <- vector("list", length(draw_ids))
+  overall_draw_summaries <- vector("list", length(draw_ids))
+
+  # Process each posterior draw independently to keep memory use bounded.
+  for (i in seq_along(draw_ids)) {
+    d <- draw_ids[i]
+    draw_params <- subject_params[subject_params$draw_id == d, , drop = FALSE]
+    draw_sim_list <- vector("list", length(sub_ids) * 2)
+    sim_idx <- 1
+
+    # Simulate full and A_fr-amputated policy outputs for each participant.
+    for (s in sub_ids) {
+      sub_design <- trial_template[trial_template$sub_index == s, , drop = FALSE]
+      par_row <- draw_params[draw_params$sub_index == s, , drop = FALSE]
+
+      draw_sim_list[[sim_idx]] <- s3_replay_subject_amputation(
+        sub_design = sub_design,
+        par_row = par_row,
+        n_f = n_f,
+        aff_fr_multiplier = 1,
+        model_label = "Full posterior predictive"
+      )
+      sim_idx <- sim_idx + 1
+
+      draw_sim_list[[sim_idx]] <- s3_replay_subject_amputation(
+        sub_design = sub_design,
+        par_row = par_row,
+        n_f = n_f,
+        aff_fr_multiplier = 0,
+        model_label = "A_fr amputated"
+      )
+      sim_idx <- sim_idx + 1
+    }
+
+    # Add both realized and probability-scale stay diagnostics before summarizing.
+    draw_sim <- dplyr::bind_rows(draw_sim_list) |>
+      s3_add_simulated_stay(choice_col = "choice_sim")
+
+    sim_draw_summaries[[i]] <- s3_simulated_stay_draw_summary(draw_sim)
+    pred_draw_summaries[[i]] <- s3_predicted_stay_draw_summary(draw_sim)
+    choice_sim_draw_summaries[[i]] <- s3_last_experience_choice_draw_summary(
+      sim_df = draw_sim,
+      value_col = "choice_sim",
+      metric = "Simulated choices"
+    )
+    choice_pred_draw_summaries[[i]] <- s3_last_experience_choice_draw_summary(
+      sim_df = draw_sim,
+      value_col = "p_choose_a",
+      metric = "Predicted p(choose left cue)"
+    )
+    overall_draw_summaries[[i]] <- s3_overall_simulated_stay_draw_summary(draw_sim)
+  }
+
+  list(
+    sim_draw_summary = dplyr::bind_rows(sim_draw_summaries),
+    pred_draw_summary = dplyr::bind_rows(pred_draw_summaries),
+    choice_sim_draw_summary = dplyr::bind_rows(choice_sim_draw_summaries),
+    choice_pred_draw_summary = dplyr::bind_rows(choice_pred_draw_summaries),
+    overall_draw_summary = dplyr::bind_rows(overall_draw_summaries)
+  )
+}
+
+# Run replayed policies without binary choice simulation and summarize p(stay).
+# This is the fastest path for posterior-mean subject-level parameters, because it
+# only computes the model-implied probability of staying.
+s3_run_replay_policy_amputation_summary_set <- function(trial_template, subject_params) {
+  sub_ids <- sort(unique(trial_template$sub_index))
+  draw_ids <- sort(unique(subject_params$draw_id))
+  n_f <- max(c(trial_template$fA_ix, trial_template$fB_ix), na.rm = TRUE)
+
+  pred_draw_summaries <- vector("list", length(draw_ids))
+  overall_draw_summaries <- vector("list", length(draw_ids))
+
+  # Process each parameter set independently; posterior-mean use will usually have one draw_id.
+  for (i in seq_along(draw_ids)) {
+    d <- draw_ids[i]
+    draw_params <- subject_params[subject_params$draw_id == d, , drop = FALSE]
+    draw_policy_list <- vector("list", length(sub_ids) * 2)
+    policy_idx <- 1
+
+    # Evaluate full and A_fr-amputated policies along observed histories.
+    for (s in sub_ids) {
+      sub_design <- trial_template[trial_template$sub_index == s, , drop = FALSE]
+      par_row <- draw_params[draw_params$sub_index == s, , drop = FALSE]
+
+      draw_policy_list[[policy_idx]] <- s3_replay_subject_amputation(
+        sub_design = sub_design,
+        par_row = par_row,
+        n_f = n_f,
+        aff_fr_multiplier = 1,
+        model_label = "Full posterior-mean policy",
+        simulate_choice = FALSE
+      )
+      policy_idx <- policy_idx + 1
+
+      draw_policy_list[[policy_idx]] <- s3_replay_subject_amputation(
+        sub_design = sub_design,
+        par_row = par_row,
+        n_f = n_f,
+        aff_fr_multiplier = 0,
+        model_label = "A_fr amputated posterior-mean policy",
+        simulate_choice = FALSE
+      )
+      policy_idx <- policy_idx + 1
+    }
+
+    # Summarize only probability-scale stay predictions; no binary choices are used.
+    draw_policy <- dplyr::bind_rows(draw_policy_list) |>
+      s3_add_policy_predicted_stay(p_stay_choice_col = "choice_numeric")
+
+    pred_draw_summaries[[i]] <- s3_predicted_stay_draw_summary(draw_policy)
+    overall_draw_summaries[[i]] <- draw_policy |>
+      dplyr::filter(!is.na(p_stay_pred)) |>
+      dplyr::group_by(draw_id, source = model) |>
+      dplyr::summarise(prob_stay = mean(p_stay_pred), .groups = "drop") |>
+      dplyr::mutate(
+        predictor = "Overall stay",
+        x_value = "overall",
+        metric = "Predicted p(stay)"
+      )
+  }
+
+  list(
+    pred_draw_summary = dplyr::bind_rows(pred_draw_summaries),
+    overall_draw_summary = dplyr::bind_rows(overall_draw_summaries)
+  )
+}
+
+# Run the closed-loop amputation draw-by-draw and return compact summaries.
+# This has the same return shape as s3_run_replay_amputation_summary_set(), making
+# it easy to swap replay and closed-loop outputs in the Rmd.
+s3_run_closed_loop_amputation_summary_set <- function(trial_template, subject_params, trial_predictor_bins = NULL) {
+  sub_ids <- sort(unique(trial_template$sub_index))
+  draw_ids <- sort(unique(subject_params$draw_id))
+  n_f <- max(c(trial_template$fA_ix, trial_template$fB_ix), na.rm = TRUE)
+
+  sim_draw_summaries <- vector("list", length(draw_ids))
+  pred_draw_summaries <- vector("list", length(draw_ids))
+  choice_sim_draw_summaries <- vector("list", length(draw_ids))
+  choice_pred_draw_summaries <- vector("list", length(draw_ids))
+  trial_predictor_choice_sim_draw_summaries <- vector("list", length(draw_ids))
+  trial_predictor_choice_pred_draw_summaries <- vector("list", length(draw_ids))
+  overall_draw_summaries <- vector("list", length(draw_ids))
+
+  # Process one posterior draw at a time so trial-level simulations can be discarded.
+  for (i in seq_along(draw_ids)) {
+    d <- draw_ids[i]
+    draw_params <- subject_params[subject_params$draw_id == d, , drop = FALSE]
+    draw_sim_list <- vector("list", length(sub_ids) * 2)
+    sim_idx <- 1
+
+    # Simulate each participant under both the full and A_fr-amputated closed-loop policies.
+    for (s in sub_ids) {
+      sub_design <- trial_template[trial_template$sub_index == s, , drop = FALSE]
+      par_row <- draw_params[draw_params$sub_index == s, , drop = FALSE]
+
+      draw_sim_list[[sim_idx]] <- s3_closed_loop_subject_amputation(
+        sub_design = sub_design,
+        par_row = par_row,
+        n_f = n_f,
+        aff_fr_multiplier = 1,
+        model_label = "Full closed-loop"
+      )
+      sim_idx <- sim_idx + 1
+
+      draw_sim_list[[sim_idx]] <- s3_closed_loop_subject_amputation(
+        sub_design = sub_design,
+        par_row = par_row,
+        n_f = n_f,
+        aff_fr_multiplier = 0,
+        model_label = "A_fr amputated closed-loop"
+      )
+      sim_idx <- sim_idx + 1
+    }
+
+    # For closed-loop, policy-implied p(stay) is relative to the simulated current choice.
+    draw_sim <- dplyr::bind_rows(draw_sim_list) |>
+      s3_add_simulated_stay(choice_col = "choice_sim", p_stay_choice_col = "choice_sim")
+
+    sim_draw_summaries[[i]] <- s3_simulated_stay_draw_summary(draw_sim)
+    pred_draw_summaries[[i]] <- s3_predicted_stay_draw_summary(draw_sim)
+    choice_sim_draw_summaries[[i]] <- s3_last_experience_choice_draw_summary(
+      sim_df = draw_sim,
+      value_col = "choice_sim",
+      metric = "Simulated choices"
+    )
+    choice_pred_draw_summaries[[i]] <- s3_last_experience_choice_draw_summary(
+      sim_df = draw_sim,
+      value_col = "p_choose_a",
+      metric = "Predicted p(choose left cue)"
+    )
+    if (!is.null(trial_predictor_bins)) {
+      trial_predictor_choice_sim_draw_summaries[[i]] <- s3_trial_predictor_choice_draw_summary(
+        sim_df = draw_sim,
+        trial_predictor_bins = trial_predictor_bins,
+        value_col = "choice_sim",
+        metric = "Simulated choices"
+      )
+      trial_predictor_choice_pred_draw_summaries[[i]] <- s3_trial_predictor_choice_draw_summary(
+        sim_df = draw_sim,
+        trial_predictor_bins = trial_predictor_bins,
+        value_col = "p_choose_a",
+        metric = "Predicted p(choose left cue)"
+      )
+    }
+    overall_draw_summaries[[i]] <- s3_overall_simulated_stay_draw_summary(draw_sim)
+  }
+
+  out <- list(
+    sim_draw_summary = dplyr::bind_rows(sim_draw_summaries),
+    pred_draw_summary = dplyr::bind_rows(pred_draw_summaries),
+    choice_sim_draw_summary = dplyr::bind_rows(choice_sim_draw_summaries),
+    choice_pred_draw_summary = dplyr::bind_rows(choice_pred_draw_summaries),
+    overall_draw_summary = dplyr::bind_rows(overall_draw_summaries)
+  )
+
+  # Add optional fixed-predictor summaries only when the caller provides those bins.
+  if (!is.null(trial_predictor_bins)) {
+    out$trial_predictor_choice_sim_draw_summary <- dplyr::bind_rows(trial_predictor_choice_sim_draw_summaries)
+    out$trial_predictor_choice_pred_draw_summary <- dplyr::bind_rows(trial_predictor_choice_pred_draw_summaries)
+  }
+
+  out
+}
+
+# Summarize observed stay probabilities with participant-level confidence intervals.
+# The point estimate is the mean of participant-level condition means, which keeps
+# participants equally weighted despite minor trial-count differences.
+s3_observed_stay_summary <- function(trial_template, ci_level = .95) {
+  obs_df <- trial_template |>
+    dplyr::filter(show_fres == 1, !is.na(stay)) |>
+    dplyr::mutate(
+      box_value = as.character(box_val),
+      cue_outcome = as.character(out)
+    )
+
+  # Build condition summaries for box values and cue outcomes separately.
+  box_sum <- obs_df |>
+    dplyr::group_by(sub_index, x_value = box_value) |>
+    dplyr::summarise(sub_prob = mean(stay), .groups = "drop") |>
+    s3_subject_ci_summary(predictor = "Box amount", ci_level = ci_level)
+
+  out_sum <- obs_df |>
+    dplyr::group_by(sub_index, x_value = cue_outcome) |>
+    dplyr::summarise(sub_prob = mean(stay), .groups = "drop") |>
+    s3_subject_ci_summary(predictor = "Cue outcome", ci_level = ci_level)
+
+  dplyr::bind_rows(box_sum, out_sum)
+}
+
+# Summarize the observed overall stay rate with participant-level confidence intervals.
+# This is useful for checking whether posterior predictive simulations are calibrated
+# to the baseline tendency to repeat choices, before looking at high/low conditions.
+s3_observed_overall_stay_summary <- function(trial_template, ci_level = .95) {
+  trial_template |>
+    dplyr::filter(!is.na(stay)) |>
+    dplyr::group_by(sub_index) |>
+    dplyr::summarise(sub_prob = mean(stay), .groups = "drop") |>
+    dplyr::mutate(x_value = "overall") |>
+    s3_subject_ci_summary(predictor = "Overall stay", ci_level = ci_level) |>
+    dplyr::mutate(metric = "Observed stay")
+}
+
+# Compute participant-level mean and confidence interval for a condition summary.
+# This helper keeps the observed-data CI calculation in one place.
+s3_subject_ci_summary <- function(sub_condition_df, predictor, ci_level = .95) {
+  alpha <- 1 - ci_level
+
+  sub_condition_df |>
+    dplyr::group_by(x_value) |>
+    dplyr::summarise(
+      source = "Observed",
+      predictor = predictor,
+      prob_stay = mean(sub_prob, na.rm = TRUE),
+      se = stats::sd(sub_prob, na.rm = TRUE) / sqrt(dplyr::n()),
+      n_sub = dplyr::n(),
+      .groups = "drop"
+    ) |>
+    dplyr::mutate(
+      ci_low = pmax(0, prob_stay - stats::qt(1 - alpha / 2, df = n_sub - 1) * se),
+      ci_high = pmin(1, prob_stay + stats::qt(1 - alpha / 2, df = n_sub - 1) * se)
+    )
+}
+
+# Summarize simulated stay probabilities at the posterior-draw level.
+# This compact output is useful to save because it preserves posterior predictive
+# uncertainty without storing every simulated trial.
+s3_simulated_stay_draw_summary <- function(sim_df) {
+  sim_fres <- sim_df |>
+    dplyr::filter(show_fres == 1, !is.na(stay_sim)) |>
+    dplyr::mutate(
+      box_value = as.character(box_val),
+      cue_outcome = as.character(out)
+    )
+
+  box_draws <- sim_fres |>
+    dplyr::group_by(draw_id, source = model, x_value = box_value) |>
+    dplyr::summarise(prob_stay = mean(stay_sim), .groups = "drop") |>
+    dplyr::mutate(predictor = "Box amount")
+
+  out_draws <- sim_fres |>
+    dplyr::group_by(draw_id, source = model, x_value = cue_outcome) |>
+    dplyr::summarise(prob_stay = mean(stay_sim), .groups = "drop") |>
+    dplyr::mutate(predictor = "Cue outcome")
+
+  dplyr::bind_rows(box_draws, out_draws)
+}
+
+# Summarize policy-implied stay probabilities at the posterior-draw level.
+# This uses p_stay_pred rather than simulated binary choices, so it is less noisy
+# than realized posterior predictive stay rates.
+s3_predicted_stay_draw_summary <- function(sim_df) {
+  sim_fres <- sim_df |>
+    dplyr::filter(show_fres == 1, !is.na(p_stay_pred)) |>
+    dplyr::mutate(
+      box_value = as.character(box_val),
+      cue_outcome = as.character(out)
+    )
+
+  box_draws <- sim_fres |>
+    dplyr::group_by(draw_id, source = model, x_value = box_value) |>
+    dplyr::summarise(prob_stay = mean(p_stay_pred), .groups = "drop") |>
+    dplyr::mutate(predictor = "Box amount")
+
+  out_draws <- sim_fres |>
+    dplyr::group_by(draw_id, source = model, x_value = cue_outcome) |>
+    dplyr::summarise(prob_stay = mean(p_stay_pred), .groups = "drop") |>
+    dplyr::mutate(predictor = "Cue outcome")
+
+  dplyr::bind_rows(box_draws, out_draws)
+}
+
+# Summarize observed choices by last-experience cue outcome and box-value differences.
+# The plotted points are raw choice frequencies: positive x-values mean the left cue
+# had the higher most-recent value, and the y-axis is the probability of choosing it.
+s3_observed_last_experience_choice_summary <- function(trial_template) {
+  obs_df <- trial_template |>
+    s3_add_last_experience_diffs(choice_col = "choice_numeric") |>
+    dplyr::mutate(choice_prob = as.numeric(choice_numeric == 1L))
+
+  # Build separate panel summaries so each x-axis can use its natural units.
+  outcome_sum <- obs_df |>
+    dplyr::filter(!is.na(last_out_diff), !is.na(choice_prob)) |>
+    dplyr::group_by(x_numeric = last_out_diff) |>
+    dplyr::summarise(
+      source = "Observed",
+      prob_choose_fA = mean(choice_prob),
+      n_trial = dplyr::n(),
+      .groups = "drop"
+    ) |>
+    dplyr::mutate(predictor = "Cue outcome")
+
+  box_sum <- obs_df |>
+    dplyr::filter(!is.na(last_box_diff), !is.na(choice_prob)) |>
+    dplyr::group_by(x_numeric = last_box_diff) |>
+    dplyr::summarise(
+      source = "Observed",
+      prob_choose_fA = mean(choice_prob),
+      n_trial = dplyr::n(),
+      .groups = "drop"
+    ) |>
+    dplyr::mutate(predictor = "Box amount")
+
+  dplyr::bind_rows(outcome_sum, box_sum) |>
+    dplyr::mutate(
+      x_value = as.character(x_numeric),
+      metric = "Observed choices",
+      ci_low = NA_real_,
+      ci_high = NA_real_
+    )
+}
+
+# Summarize closed-loop posterior simulations by raw last-experience differences.
+# Histories are always computed from simulated choices; value_col controls whether
+# the y-axis uses realized choices or the policy-implied p(choose left cue).
+s3_last_experience_choice_draw_summary <- function(
+  sim_df,
+  value_col = "choice_sim",
+  metric = "Simulated choices",
+  choice_history_col = "choice_sim"
+) {
+  sim_history <- sim_df |>
+    s3_add_last_experience_diffs(choice_col = choice_history_col)
+
+  # Choose the y-axis scale once, then store it as a common probability column.
+  if (value_col == choice_history_col) {
+    sim_history <- sim_history |>
+      dplyr::mutate(choice_prob = as.numeric(.data[[value_col]] == 1L))
+  } else {
+    sim_history <- sim_history |>
+      dplyr::mutate(choice_prob = as.numeric(.data[[value_col]]))
+  }
+
+  # Summarize each posterior draw separately, preserving posterior predictive spread.
+  outcome_draws <- sim_history |>
+    dplyr::filter(!is.na(last_out_diff), !is.na(choice_prob)) |>
+    dplyr::group_by(draw_id, source = model, x_numeric = last_out_diff) |>
+    dplyr::summarise(
+      prob_choose_fA = mean(choice_prob),
+      n_trial = dplyr::n(),
+      .groups = "drop"
+    ) |>
+    dplyr::mutate(predictor = "Cue outcome")
+
+  box_draws <- sim_history |>
+    dplyr::filter(!is.na(last_box_diff), !is.na(choice_prob)) |>
+    dplyr::group_by(draw_id, source = model, x_numeric = last_box_diff) |>
+    dplyr::summarise(
+      prob_choose_fA = mean(choice_prob),
+      n_trial = dplyr::n(),
+      .groups = "drop"
+    ) |>
+    dplyr::mutate(predictor = "Box amount")
+
+  dplyr::bind_rows(outcome_draws, box_draws) |>
+    dplyr::mutate(
+      x_value = as.character(x_numeric),
+      metric = metric
+    )
+}
+
+# Summarize observed choices against a fixed set of trial-level predictor bins.
+# This is used for model-derived x-axes such as posterior-median Q and M values,
+# where the same observed-history predictor should be reused for observed and
+# simulated choices.
+s3_observed_trial_predictor_choice_summary <- function(trial_template, trial_predictor_bins) {
+  trial_template |>
+    dplyr::left_join(
+      trial_predictor_bins,
+      by = c("sub_index", "overall_trial_nl")
+    ) |>
+    dplyr::filter(!is.na(x_numeric), !is.na(choice_numeric)) |>
+    dplyr::mutate(choice_prob = as.numeric(choice_numeric == 1L)) |>
+    dplyr::group_by(predictor, x_value, x_numeric) |>
+    dplyr::summarise(
+      source = "Observed",
+      prob_choose_fA = mean(choice_prob),
+      n_trial = dplyr::n(),
+      .groups = "drop"
+    ) |>
+    dplyr::mutate(
+      metric = "Observed choices",
+      ci_low = NA_real_,
+      ci_high = NA_real_
+    )
+}
+
+# Summarize simulated choices against fixed observed-history trial predictors.
+# The x-axis values come from trial_predictor_bins, while the y-axis can be either
+# realized simulated choices or policy-implied p(choose left cue).
+s3_trial_predictor_choice_draw_summary <- function(
+  sim_df,
+  trial_predictor_bins,
+  value_col = "choice_sim",
+  metric = "Simulated choices"
+) {
+  sim_history <- sim_df |>
+    dplyr::left_join(
+      trial_predictor_bins,
+      by = c("sub_index", "overall_trial_nl"),
+      relationship = "many-to-many"
+    ) |>
+    dplyr::filter(!is.na(x_numeric))
+
+  # Put realized choices and probability-scale predictions on the same column.
+  if (value_col == "choice_sim") {
+    sim_history <- sim_history |>
+      dplyr::mutate(choice_prob = as.numeric(choice_sim == 1L))
+  } else {
+    sim_history <- sim_history |>
+      dplyr::mutate(choice_prob = as.numeric(.data[[value_col]]))
+  }
+
+  # Keep summaries at the draw level so posterior intervals can be added later.
+  sim_history |>
+    dplyr::filter(!is.na(choice_prob)) |>
+    dplyr::group_by(draw_id, source = model, predictor, x_value, x_numeric) |>
+    dplyr::summarise(
+      prob_choose_fA = mean(choice_prob),
+      n_trial = dplyr::n(),
+      .groups = "drop"
+    ) |>
+    dplyr::mutate(metric = metric)
+}
+
+# Summarize overall simulated stay diagnostics for one posterior draw.
+# Both realized simulated stay and policy-implied p(stay) are retained to separate
+# Monte Carlo choice noise from baseline model calibration.
+s3_overall_simulated_stay_draw_summary <- function(sim_df) {
+  sim_df |>
+    dplyr::filter(!is.na(stay_sim), !is.na(p_stay_pred)) |>
+    dplyr::group_by(draw_id, source = model) |>
+    dplyr::summarise(
+      simulated_stay = mean(stay_sim),
+      predicted_p_stay = mean(p_stay_pred),
+      .groups = "drop"
+    ) |>
+    tidyr::pivot_longer(
+      cols = c(simulated_stay, predicted_p_stay),
+      names_to = "metric",
+      values_to = "prob_stay"
+    ) |>
+    dplyr::mutate(
+      predictor = "Overall stay",
+      x_value = "overall",
+      metric = dplyr::recode(
+        metric,
+        simulated_stay = "Simulated stay",
+        predicted_p_stay = "Predicted p(stay)"
+      )
+    )
+}
+
+# Convert draw-level simulated summaries into posterior predictive intervals.
+# This function is used by the streaming amputation runner and by the trial-level
+# wrapper below.
+s3_simulated_interval_summary <- function(sim_draw_summary) {
+  sim_draw_summary |>
+    dplyr::group_by(source, predictor, x_value) |>
+    dplyr::summarise(
+      # Compute all interval components from the original draw-level vector.
+      # dplyr evaluates summary columns in order, so using distinct temporary
+      # names avoids replacing prob_stay before the quantiles are calculated.
+      prob_stay_median = stats::median(prob_stay),
+      ci_low = stats::quantile(prob_stay, .025),
+      ci_high = stats::quantile(prob_stay, .975),
+      .groups = "drop"
+    ) |>
+    dplyr::rename(prob_stay = prob_stay_median)
+}
+
+# Convert draw-level choice summaries into posterior predictive intervals.
+# The interval columns are saved for diagnostics even though the first manuscript
+# plots use only the posterior median lines.
+s3_choice_interval_summary <- function(choice_draw_summary) {
+  choice_draw_summary |>
+    dplyr::group_by(source, predictor, x_value, x_numeric, metric) |>
+    dplyr::summarise(
+      prob_choose_fA_median = stats::median(prob_choose_fA),
+      ci_low = stats::quantile(prob_choose_fA, .025),
+      ci_high = stats::quantile(prob_choose_fA, .975),
+      n_trial = stats::median(n_trial),
+      .groups = "drop"
+    ) |>
+    dplyr::rename(prob_choose_fA = prob_choose_fA_median)
+}
+
+# Convert draw-level overall summaries into posterior predictive intervals.
+# Grouping includes metric so realized choices and probability-scale diagnostics
+# are not mixed.
+s3_overall_interval_summary <- function(overall_draw_summary) {
+  overall_draw_summary |>
+    dplyr::group_by(source, predictor, x_value, metric) |>
+    dplyr::summarise(
+      # Keep the median separate until after the interval endpoints are computed.
+      prob_stay_median = stats::median(prob_stay),
+      ci_low = stats::quantile(prob_stay, .025),
+      ci_high = stats::quantile(prob_stay, .975),
+      .groups = "drop"
+    ) |>
+    dplyr::rename(prob_stay = prob_stay_median)
+}
+
+# Summarize simulated stay probabilities across posterior draws.
+# Each draw contributes one mean stay probability per model and condition, yielding
+# posterior predictive intervals for the full and amputated models.
+s3_simulated_stay_summary <- function(sim_df) {
+  s3_simulated_interval_summary(s3_simulated_stay_draw_summary(sim_df))
+}
+
+# Fit the observed model-free stay regression used for p-value annotations.
+# One p-value is shown for box amount and one for cue outcome.
+s3_observed_stay_p_values <- function(trial_template) {
+  fit_df <- trial_template |>
+    dplyr::filter(show_fres == 1, !is.na(stay))
+
+  fit <- lmerTest::lmer(
+    stay ~ box_val + out + (box_val + out | sub_index),
+    data = fit_df,
+    control = lme4::lmerControl(optimizer = "bobyqa")
+  )
+  coefs <- summary(fit)$coefficients
+
+  data.frame(
+    predictor = c("Box amount", "Cue outcome"),
+    p_value = c(coefs["box_val", "Pr(>|t|)"], coefs["out", "Pr(>|t|)"])
+  )
+}
+
+# Format p-values for compact plot annotations.
+s3_format_p_value <- function(p_value) {
+  ifelse(p_value < .001, "p < .001", paste0("p = ", format(round(p_value, 3), nsmall = 3)))
+}
+
+# Plot observed, full posterior predictive, and A_fr-amputated stay probabilities.
+# The y-axis is intentionally zoomed by default; use the caption to note that it
+# does not include zero when exporting for manuscripts. By default, facets get
+# separate y-ranges so small condition effects are not visually flattened by the
+# larger cue-outcome effect.
+plot_s3_amputation_stay <- function(summary_df, p_values = NULL, y_limits = NULL, free_y = TRUE) {
+  source_levels <- c(
+    "Observed",
+    "Full posterior predictive",
+    "A_fr amputated",
+    "Full posterior-mean policy",
+    "A_fr amputated posterior-mean policy",
+    "Full closed-loop",
+    "A_fr amputated closed-loop"
+  )
+  source_colors <- c(
+    "Observed" = "black",
+    "Full posterior predictive" = "#2B6CB0",
+    "A_fr amputated" = "#B83227",
+    "Full posterior-mean policy" = "#2B6CB0",
+    "A_fr amputated posterior-mean policy" = "#B83227",
+    "Full closed-loop" = "#2B6CB0",
+    "A_fr amputated closed-loop" = "#B83227"
+  )
+  source_shapes <- c(
+    "Observed" = 16,
+    "Full posterior predictive" = 17,
+    "A_fr amputated" = 15,
+    "Full posterior-mean policy" = 17,
+    "A_fr amputated posterior-mean policy" = 15,
+    "Full closed-loop" = 17,
+    "A_fr amputated closed-loop" = 15
+  )
+
+  plot_df <- summary_df |>
+    dplyr::mutate(
+      x_numeric = as.numeric(x_value),
+      source = factor(source, levels = source_levels),
+      predictor = factor(predictor, levels = c("Cue outcome", "Box amount"))
+    )
+
+  if (is.null(y_limits) && !free_y) {
+    y_range <- range(c(plot_df$ci_low, plot_df$ci_high), na.rm = TRUE)
+    y_pad <- diff(y_range) * .15
+    y_limits <- c(y_range[1] - y_pad, y_range[2] + y_pad)
+  } else if (!is.null(y_limits)) {
+    y_limits <- y_limits
+  }
+
+  # Build one p-value label per panel when requested.
+  if (!is.null(p_values)) {
+    p_annot <- p_values |>
+      dplyr::mutate(
+        label = s3_format_p_value(p_value),
+        x_numeric = -Inf,
+        y = Inf
+      )
+  } else {
+    p_annot <- NULL
+  }
+
+  ggplot2::ggplot(plot_df, ggplot2::aes(x = x_numeric, y = prob_stay, color = source, shape = source)) +
+    ggplot2::geom_ribbon(
+      ggplot2::aes(ymin = ci_low, ymax = ci_high, fill = source, group = source),
+      alpha = .14,
+      color = NA,
+      show.legend = FALSE
+    ) +
+    ggplot2::geom_line(
+      ggplot2::aes(group = source),
+      linewidth = .8
+    ) +
+    ggplot2::geom_point(size = 1.15, alpha = .75) +
+    ggplot2::facet_wrap(~predictor, scales = ifelse(free_y, "free", "free_x")) +
+    {
+      if (!is.null(y_limits)) {
+        ggplot2::coord_cartesian(ylim = y_limits)
+      }
+    } +
+    ggplot2::scale_color_manual(values = source_colors) +
+    ggplot2::scale_fill_manual(values = source_colors) +
+    ggplot2::scale_shape_manual(values = source_shapes) +
+    ggplot2::labs(
+      x = "",
+      y = "Probability of Staying",
+      color = "",
+      shape = ""
+    ) +
+    ggplot2::theme_classic() +
+    ggplot2::theme(
+      legend.position = "bottom",
+      strip.background = ggplot2::element_blank(),
+      panel.grid.major.y = ggplot2::element_line(color = "#E6E6E6", linewidth = .35)
+    ) +
+    {
+      if (!is.null(p_annot)) {
+        ggplot2::geom_text(
+          data = p_annot,
+          ggplot2::aes(x = x_numeric, y = y, label = label),
+          inherit.aes = FALSE,
+          hjust = -.05,
+          vjust = 1.25,
+          size = 3.2
+        )
+      }
+    }
+}
+
+# Plot last-experience choice curves for observed and closed-loop amputation data.
+# This companion to the stay plot shows how recent cue outcomes and the box amounts
+# present at those outcomes relate to choosing the left-side cue.
+plot_s3_amputation_last_experience_choice <- function(
+  summary_df,
+  y_limits = NULL,
+  predictor_levels = c("Cue outcome", "Box amount"),
+  x_label = "Last-experience difference (left cue - right cue)"
+) {
+  source_levels <- c(
+    "Observed",
+    "Full closed-loop",
+    "A_fr amputated closed-loop"
+  )
+  source_colors <- c(
+    "Observed" = "black",
+    "Full closed-loop" = "#2B6CB0",
+    "A_fr amputated closed-loop" = "#B83227"
+  )
+  source_shapes <- c(
+    "Observed" = 16,
+    "Full closed-loop" = 17,
+    "A_fr amputated closed-loop" = 15
+  )
+  source_linetypes <- c(
+    "Observed" = "solid",
+    "Full closed-loop" = "solid",
+    "A_fr amputated closed-loop" = "dashed"
+  )
+
+  # Order the two panels and the x-values before drawing lines.
+  plot_df <- summary_df |>
+    dplyr::mutate(
+      source = factor(source, levels = source_levels),
+      predictor = factor(predictor, levels = predictor_levels)
+    ) |>
+    dplyr::arrange(predictor, source, x_numeric)
+
+  # Use a shared zoomed y-axis so both panels remain comparable without flattening.
+  if (is.null(y_limits)) {
+    y_range <- range(plot_df$prob_choose_fA, na.rm = TRUE)
+    y_pad <- max(diff(y_range) * .15, .02)
+    y_limits <- c(max(0, y_range[1] - y_pad), min(1, y_range[2] + y_pad))
+  }
+
+  ggplot2::ggplot(
+    plot_df,
+    ggplot2::aes(
+      x = x_numeric,
+      y = prob_choose_fA,
+      color = source,
+      shape = source,
+      linetype = source,
+      group = source
+    )
+  ) +
+    ggplot2::geom_line(linewidth = .8) +
+    ggplot2::geom_point(size = 1.25, alpha = .8) +
+    ggplot2::facet_wrap(~predictor, scales = "free_x", nrow = 1) +
+    ggplot2::coord_cartesian(ylim = y_limits) +
+    ggplot2::scale_color_manual(values = source_colors) +
+    ggplot2::scale_shape_manual(values = source_shapes) +
+    ggplot2::scale_linetype_manual(values = source_linetypes) +
+    ggplot2::labs(
+      x = x_label,
+      y = "P(choose left cue)",
+      color = "",
+      shape = "",
+      linetype = ""
+    ) +
+    ggplot2::theme_classic() +
+    ggplot2::theme(
+      legend.position = "bottom",
+      strip.background = ggplot2::element_blank(),
+      panel.grid.major.y = ggplot2::element_line(color = "#E6E6E6", linewidth = .35)
+    )
+}
