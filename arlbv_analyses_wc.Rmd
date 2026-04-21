@@ -457,6 +457,16 @@ quantile(scd_aff_fr_sens_mu-scd_rew_fr_sens_mu,c(.025,.5,.975))
 mean(scd_aff_fr_sens_mu > scd_rew_fr_sens_mu)
 ```
 
+```{r}
+trials_fres <- filter(trials,show_fres == 1) # Get trials on which the cue outcome was received
+final_ls_Bbv <- get_draws("final_ls",vars=c("B_bv_fr_mu"),model_out_dir=model_out_dir)
+final_ls_Brew <- get_draws("final_ls",vars=c("B_rew_fr_mu"),model_out_dir=model_out_dir)
+
+scd_B_bv_fr_mu <- final_ls_Bbv*sd(trials_fres$box_val) # Standardize
+scd_B_rew_fr_mu <- final_ls_Brew*sd(trials_fres$out) 
+
+get_ci_pd(draws = abs(scd_B_rew_fr_mu) - abs(scd_B_bv_fr_mu))
+```
 
 Creating interval plot
 ```{r}
@@ -729,7 +739,7 @@ s3_amp_stay_effect_plot <- plot_s3_stay_effect_amputation(
   sim_summary = s3_amp_sim_stay_effect_summary
 )
 s3_amp_stay_effect_plot
-ggsave(paste0(s3_amp_closed_prefix, "_stay_effect_glm_amputation_plot.pdf"), s3_amp_stay_effect_plot, width = 2.5, height = 1.67)
+ggsave(paste0(s3_amp_closed_prefix, "_stay_effect_glm_amputation_plot.pdf"), s3_amp_stay_effect_plot, width = 5, height = 3.33)
 ```
 
 
@@ -1252,7 +1262,7 @@ s3_choice_recovery_plot <- plot_s3_choice_param_recovery(
   point_alpha = 0.35,
   point_size = 1.35
 )
-ggsave(plot_file, s3_choice_recovery_plot, width = 5.31, height = 2)
+ggsave(plot_file, s3_choice_recovery_plot, width = 6.9, height = 2)
 
 s3_choice_recovery$fail_summary
 ```
@@ -1269,7 +1279,7 @@ replot_s3 <- build_s3_choice_param_recovery_plot_from_file(
 ggsave(
   filename = paste0(rec_dir, "s3_choice_param_recovery_panel_replot.pdf"),
   plot = replot_s3$panel_plot,
-  width = 5.31,
+  width = 6.9,
   height = 2
 )
 ```

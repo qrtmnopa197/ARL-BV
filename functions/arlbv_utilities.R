@@ -694,9 +694,63 @@ run_s3_choice_param_recovery <- function(
 plot_s3_choice_param_recovery <- function(
   estimates_df,
   point_alpha = 0.35,
-  point_size = 1.35
+  point_size = 1.35,
+  equal_axes = TRUE,
+  n_major_breaks = 5
 ) {
   plot_df <- estimates_df[is.finite(estimates_df$recovered_value), , drop = FALSE]
+  
+  if (isTRUE(equal_axes)) {
+    if (!requireNamespace("patchwork", quietly = TRUE)) {
+      stop("equal_axes=TRUE requires the patchwork package.")
+    }
+
+    # Build one square-coordinate panel per parameter so each panel has matching x/y scales,
+    # while still allowing different limits across parameters.
+    parameter_levels <- unique(as.character(plot_df$parameter))
+    panel_list <- lapply(parameter_levels, function(param_name) {
+      d <- plot_df[plot_df$parameter == param_name, , drop = FALSE]
+
+      # Set panel-specific equal-axis limits directly from the data with a small cushion.
+      # Round only displayed tick labels by parameter: nearest 1 for B_Q/B_A and nearest 0.1 for B_R.
+      max_abs <- max(abs(c(d$true_value, d$recovered_value)), na.rm = TRUE)
+      if (!is.finite(max_abs)) {
+        max_abs <- 0
+      }
+      target_max <- max_abs * 1.08
+      round_to <- ifelse(param_name == "B_R", 0.1, 1)
+
+      if (target_max == 0) {
+        # Handle degenerate no-variation panels with a small symmetric default span.
+        axis_limits <- c(-round_to, round_to)
+      } else {
+        axis_limits <- c(-target_max, target_max)
+      }
+
+      axis_breaks <- seq(axis_limits[1], axis_limits[2], length.out = n_major_breaks)
+      label_accuracy <- round_to
+
+      ggplot2::ggplot(d, ggplot2::aes(x = true_value, y = recovered_value)) +
+        ggplot2::geom_abline(intercept = 0, slope = 1, linetype = "dotted", linewidth = 0.6, color = "#4D4D4D") +
+        ggplot2::geom_point(alpha = point_alpha, size = point_size, color = "#3E7CB1") +
+        ggplot2::coord_equal(xlim = axis_limits, ylim = axis_limits, expand = FALSE) +
+        ggplot2::scale_x_continuous(breaks = axis_breaks, labels = scales::label_number(accuracy = label_accuracy)) +
+        ggplot2::scale_y_continuous(breaks = axis_breaks, labels = scales::label_number(accuracy = label_accuracy)) +
+        ggplot2::theme_minimal() +
+        ggplot2::labs(
+          title = param_name,
+          x = "True Population Mean",
+          y = "Recovered Estimate"
+        ) +
+        ggplot2::theme(
+          panel.grid.minor = ggplot2::element_blank(),
+          legend.position = "none",
+          plot.title = ggplot2::element_text(hjust = 0.5)
+        )
+    })
+
+    return(patchwork::wrap_plots(panel_list, nrow = 1))
+  }
 
   ggplot2::ggplot(plot_df, ggplot2::aes(x = true_value, y = recovered_value)) +
     ggplot2::geom_abline(intercept = 0, slope = 1, linetype = "dotted", linewidth = 0.6, color = "#4D4D4D") +
@@ -717,13 +771,17 @@ plot_s3_choice_param_recovery <- function(
 build_s3_choice_param_recovery_plot_from_file <- function(
   estimates_file,
   point_alpha = 0.35,
-  point_size = 1.35
+  point_size = 1.35,
+  equal_axes = TRUE,
+  n_major_breaks = 5
 ) {
   estimates_df <- read.csv(estimates_file, stringsAsFactors = FALSE)
   panel_plot <- plot_s3_choice_param_recovery(
     estimates_df = estimates_df,
     point_alpha = point_alpha,
-    point_size = point_size
+    point_size = point_size,
+    equal_axes = equal_axes,
+    n_major_breaks = n_major_breaks
   )
 
   list(estimates = estimates_df, panel_plot = panel_plot)
@@ -1173,7 +1231,7 @@ plot_s3_stay_effect_amputation <- function(observed_summary, sim_summary) {
     )
 
   # Offset the simulated model dots just enough that they are distinct from the bar tops.
-  sim_dodge <- ggplot2::position_dodge(width = .13)
+  sim_dodge <- ggplot2::position_dodge(width = .15)
 
   # Draw observed coefficients as bars, then overlay the simulated posterior medians.
   ggplot2::ggplot() +
@@ -1195,7 +1253,7 @@ plot_s3_stay_effect_amputation <- function(observed_summary, sim_summary) {
       data = sim_plot,
       ggplot2::aes(x = predictor, y = estimate, color = source, group = source),
       position = sim_dodge,
-      size = 4
+      size = 3
     ) +
     ggplot2::scale_color_manual(values = sim_colors) +
     ggplot2::labs(
